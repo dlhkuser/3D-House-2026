@@ -149,10 +149,10 @@
 </div>
 <div id="walkUI" class="walkui" hidden>
   <div class="cross" aria-hidden="true"></div>
-  <div class="walkbar"><b id="walkRoom">Entry</b><span>W A S D to move · arrows to turn · Shift to run · drag or click to look · Esc to leave</span><button id="bWalkExit">Exit</button></div>
+  <div class="walkbar"><b id="walkRoom">Entry</b><span>W A S D to move · arrows to turn · Shift to run · drag to look · click or E to open doors · Esc to leave</span><button id="bWalkExit">Exit</button></div>
 </div>
 <div id="stick" class="stick" hidden aria-label="Move"><div id="knob" class="knob"></div></div>
-<div class="hint">Drag empty space to orbit · drag furniture to move it · right-drag or two-finger drag to pan · scroll or pinch to zoom</div>
+<div class="hint">Drag empty space to orbit · click doors, the fridge or a TV to use them · right-drag or two-finger drag to pan · scroll or pinch to zoom</div>
 <div id="err">Couldn't load the 3D library. This page needs an internet connection to fetch three.js.</div>
 
 <script type="module">
@@ -777,11 +777,23 @@ function wallMats(r) {
   const mx = (r.x0 + r.x1) / 2, md = (r.d0 + r.d1) / 2, e = 0.08, f = (x, d) => outside(x, d) ? M.ext : M.wall;
   return [f(r.x1 + e, md), f(r.x0 - e, md), M.wall, M.wall, f(mx, r.d0 - e), f(mx, r.d1 + e)];   // +x -x +y -y +z(street) -z
 }
+// things you can click: doors, sliders, the garage door, fridge, pantry, TVs, lamps. Each has an open/closed state that
+// animates between 0 and 1; apply(t) poses it.
+const INTER = [];
+function interactive(root, apply, { open = false, dur = 0.7 } = {}) {
+  const it = { root, apply, open, t:open ? 1 : 0, dur };
+  root.traverse(o => { o.userData.inter = it; });
+  apply(it.t); INTER.push(it); return it;
+}
+// with cut-down walls, door leaves are cut at the same height as the walls
+renderer.localClippingEnabled = true;
+const DOOR_CLIP = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 100)];
 let wallGroup = null, cut = true, roof = null;
 function buildWalls() {
   if (wallGroup) { scene.remove(wallGroup); wallGroup.traverse(o => o.geometry && o.geometry.dispose()); }
   wallGroup = new THREE.Group(); scene.add(wallGroup);
   const H = cut ? H_CUT : H_FULL;
+  DOOR_CLIP[0].constant = cut ? H_CUT + 0.01 : 100;
   const capM = cut ? M.wallTop : M.wall;
   for (const r of WALL_RECTS) {
     const WM = wallMats(r);
@@ -801,23 +813,116 @@ function buildWalls() {
     if (H > DOOR_H) box(r.x0, r.x1, r.d0, r.d1, DOOR_H, H, WM, wallGroup);
     const top = Math.min(DOOR_H, H), thinX = r.x1 - r.x0 < r.d1 - r.d0;
     const mid = thinX ? (r.x0 + r.x1) / 2 : (r.d0 + r.d1) / 2;
-    const panel = (m, t) => thinX ? box(mid - t, mid + t, r.d0, r.d1, 0, top, m, wallGroup, false)
-                                  : box(r.x0, r.x1, mid - t, mid + t, 0, top, m, wallGroup, false);
-    if (kind === 'glass') panel(glass, 0.01);
-    else if (kind === 'garage') panel(M.garageDoor, 0.03);
-    else if (kind === 'front') panel(M.frontDoor, 0.025);
-    else if (kind === 'robe') {                                   // two sliding doors on offset tracks, overlapping at the middle
-      const [a0, a1] = thinX ? [r.d0, r.d1] : [r.x0, r.x1], am = (a0 + a1) / 2, t = 0.012;
-      for (const [p, q, o] of [[a0, am + 0.03, -0.022], [am - 0.03, a1, 0.022]]) {
-        if (thinX) box(mid + o - t, mid + o + t, p, q, 0, top, M.robeDoor, wallGroup, false);
-        else box(p, q, mid + o - t, mid + o + t, 0, top, M.robeDoor, wallGroup, false);
-      }
-      if (!cut) box(r.x0, r.x1, r.d0, r.d1, top - 0.01, top, M.fascia, wallGroup, false);   // top track (full-height walls only)
-    }
+    if (kind === 'robe' && !cut) box(r.x0, r.x1, r.d0, r.d1, top - 0.01, top, M.fascia, wallGroup, false);   // robe top track
   }
   alfrescoRoof.visible = !cut && !(roof && roof.visible);
 }
 buildWalls();
+
+// ---------- doors: leaves in every opening, hung in frames, that open and close ----------
+// Hinged doors swing into the room they serve (cupboards swing out). Swing sides and hinge ends are typical choices;
+// the plan shows the openings, not every swing. Room doors start open; outside doors, sliders and cupboards start shut.
+// [hinge at the start (0) or end (1) of the opening, swing side (+1 toward +d / +x), starts open]
+const SWING = { 1:[0, 1, false], 2:[0, -1, false], 3:[1, -1, true], 4:[0, -1, true], 5:[0, 1, true], 8:[0, -1, true],
+  10:[1, -1, true], 11:[0, -1, true], 12:[0, 1, true], 13:[0, 1, true], 14:[0, -1, false], 15:[0, 1, true], 16:[0, 1, false] };
+const doorGroup = new THREE.Group(); scene.add(doorGroup);
+const DOOR_IT = [];
+M.doorLeaf = new THREE.MeshStandardMaterial({ color:0xf5f3ee, roughness:0.5 });
+M.doorHw = new THREE.MeshStandardMaterial({ color:0xb9bcbf, roughness:0.3, metalness:0.8 });
+M.jamb = new THREE.MeshStandardMaterial({ color:0xf2f0ea, roughness:0.6 });
+M.alu = new THREE.MeshStandardMaterial({ color:0x34373b, roughness:0.45, metalness:0.4 });
+M.slideGlass = new THREE.MeshPhysicalMaterial({ color:0x9fc4d6, transparent:true, opacity:0.3, roughness:0.05, metalness:0.1 });
+for (const m of [M.doorLeaf, M.doorHw, M.jamb, M.alu, M.slideGlass, M.frontDoor, M.garageDoor, M.robeDoor]) m.clippingPlanes = DOOR_CLIP;
+{
+  const part = (g, w, h, l, x, y, z, m, shadow = true) => {      // a box in a door's own frame
+    const o = new THREE.Mesh(metricBox(w, h, l), m); o.position.set(x, y, z); o.castShadow = shadow; o.receiveShadow = true; g.add(o); return o;
+  };
+  const rose = new THREE.CylinderGeometry(0.026, 0.026, 0.012, 20).rotateX(Math.PI / 2);
+  DOORS.forEach((dr, n) => {
+    const kind = dr[4], rs = WALL_RECTS.filter(r => r.c === 100 + n);
+    if (!rs.length) return;
+    const x0 = Math.min(...rs.map(r => r.x0)), x1 = Math.max(...rs.map(r => r.x1)), d0 = Math.min(...rs.map(r => r.d0)), d1 = Math.max(...rs.map(r => r.d1));
+    const vert = x1 - x0 < d1 - d0;                                // the wall runs along d
+    const [a0, a1] = vert ? [d0, d1] : [x0, x1], [p0, p1] = vert ? [x0, x1] : [d0, d1], m = (p0 + p1) / 2, T = p1 - p0;
+    const at = (a, p) => vert ? [wx(p), wz(a)] : [wx(a), wz(p)];  // plan (along, across) -> world x, z
+    const U = vert ? [0, -1] : [1, 0], N = vert ? [1, 0] : [0, -1];   // world directions: along the opening, toward +side
+    // a frame: g sits at a plan point with its local +x along the opening and local +z toward the + side
+    const frame = (a, p) => { const g = new THREE.Group(), [X, Z] = at(a, p); g.position.set(X, 0, Z); g.rotation.y = Math.atan2(-U[1], U[0]); doorGroup.add(g); return g; };
+    // local +z after that turn: rotate (0,0,1) by the same yaw, then flip so it points to the + side
+    const zSign = (() => { const y = Math.atan2(-U[1], U[0]); const lz = [Math.sin(y), Math.cos(y)]; return Math.sign(lz[0] * N[0] + lz[1] * N[1]) || 1; })();
+    const len = a1 - a0, J = 0.02;
+    const linings = () => {                                         // jamb linings and architraves on both faces
+      const g = frame(a0, m);
+      for (const a of [J / 2, len - J / 2]) part(g, J, DOOR_H, T + 0.016, a, DOOR_H / 2, 0, M.jamb, false);
+      part(g, len, J, T + 0.016, len / 2, DOOR_H - J / 2, 0, M.jamb, false);
+      if (kind === 'front') return;
+      for (const sd of [-1, 1]) {
+        const z = sd * (T / 2 + 0.008);
+        for (const a of [-0.033, len + 0.033]) part(g, 0.066, DOOR_H + 0.066, 0.016, a, (DOOR_H + 0.066) / 2, z, M.jamb, false);
+        part(g, len + 0.132, 0.066, 0.016, len / 2, DOOR_H + 0.033, z, M.jamb, false);
+      }
+    };
+    if (kind === 'door' && n === 9) {                               // ensuite: cavity slider, runs into the wall toward the far end
+      linings();
+      const L = len - 2 * J, g = frame(a0 + J, m), leaf = new THREE.Group(); g.add(leaf);
+      part(leaf, L, DOOR_H - 0.03, 0.035, L / 2, (DOOR_H - 0.03) / 2 + 0.01, 0, M.doorLeaf);
+      for (const sd of [-1, 1]) part(leaf, 0.03, 0.16, 0.006, 0.07, 1.0, sd * 0.02, M.doorHw, false);   // flush pulls
+      DOOR_IT[n] = interactive(leaf, t => { leaf.position.x = (L - 0.06) * t; }, { open:true, dur:0.8 });
+      DOOR_IT[n].free = t => [a0 + J + (L - 0.06) * t, a1];
+    } else if (kind === 'door' || kind === 'front') {             // hinged
+      linings();
+      const [he, side, open0] = SWING[n] || [0, 1, true], front = kind === 'front';
+      const L = len - 2 * J - 0.006, H = DOOR_H - 0.022, lt = front ? 0.045 : 0.035;
+      const pz = side * (T / 2 - lt / 2 - 0.004) * zSign;          // hung flush with the face it swings toward
+      const ha = he ? a1 - J - 0.003 : a0 + J + 0.003;
+      const g = frame(ha, m), leaf = new THREE.Group(); g.add(leaf); leaf.position.z = pz;
+      const dir = he ? -1 : 1;                                     // local x from the hinge to the free edge
+      part(leaf, L, H, lt, dir * L / 2, H / 2 + 0.01, 0, front ? M.frontDoor : M.doorLeaf);
+      for (const y of [0.25, 1.05, 1.85]) part(leaf, 0.012, 0.1, lt + 0.006, 0, y, 0, M.doorHw, false);   // hinges
+      for (const sd of [-1, 1]) {                                  // lever handle each side
+        const hx = dir * (L - 0.065), z = sd * (lt / 2 + 0.006);
+        const r = new THREE.Mesh(rose, M.doorHw); r.position.set(hx, 1.0, z); leaf.add(r);
+        part(leaf, 0.13, 0.018, 0.018, hx - dir * 0.055, 1.0, sd * (lt / 2 + 0.04), M.doorHw, false);
+        part(leaf, 0.012, 0.012, 0.03, hx, 1.0, sd * (lt / 2 + 0.022), M.doorHw, false);
+        if (front) part(leaf, 0.03, 0.06, 0.012, hx, 1.12, z, M.doorHw, false);            // deadlock
+      }
+      // swing: turn the leaf about its hinge so the free edge heads to the swing side
+      const sg = -dir * side * zSign;
+      DOOR_IT[n] = interactive(leaf, t => { leaf.rotation.y = sg * 1.5 * t; }, { open:open0, dur:0.8 });
+      DOOR_IT[n].free = () => [a0, a1];
+    } else if (kind === 'glass') {                                 // two-panel slider: the inner panel slides over the fixed one
+      const w = len / 2 + 0.025, H = DOOR_H - 0.01;
+      const panelAt = (a, z) => {
+        const g = frame(a, m), q = new THREE.Group(); g.add(q); q.position.z = z;
+        part(q, w, H, 0.01, w / 2, H / 2 + 0.005, 0, M.slideGlass, false);
+        for (const x of [0.0225, w - 0.0225]) part(q, 0.045, H, 0.04, x, H / 2 + 0.005, 0, M.alu);
+        for (const y of [0.035, H - 0.025]) part(q, w, 0.06, 0.04, w / 2, y + 0.005, 0, M.alu);
+        return q;
+      };
+      panelAt(a1 - w, 0.025);                                         // fixed half
+      const mv = panelAt(a0, -0.025);
+      for (const sd of [-1, 1]) part(mv, 0.025, 0.3, 0.02, w - 0.06, 1.05, sd * 0.03, M.alu, false);   // pull handle
+      DOOR_IT[n] = interactive(mv, t => { mv.position.x = (w - 0.07) * t; }, { open:false, dur:1.0 });
+      DOOR_IT[n].free = t => [a0, a0 + (w - 0.07) * t];
+      part(frame(a0, m), len, 0.02, T * 0.6, len / 2, 0.01, 0, M.alu, false);                         // sill track
+    } else if (kind === 'robe') {                                  // two sliding doors on offset tracks
+      const am = len / 2, H = DOOR_H - 0.02, g = frame(a0, m);
+      const A = new THREE.Group(), B = new THREE.Group(); g.add(A, B); A.position.z = -0.022; B.position.z = 0.022;
+      part(A, am + 0.03, H, 0.024, (am + 0.03) / 2, H / 2 + 0.01, 0, M.robeDoor);
+      part(B, am + 0.03, H, 0.024, am - 0.03 + (am + 0.03) / 2, H / 2 + 0.01, 0, M.robeDoor);
+      for (const [q, x] of [[A, 0.06], [B, len - 0.06]]) for (const sd of [-1, 1]) part(q, 0.02, 0.24, 0.008, x, 1.05, sd * 0.016, M.doorHw, false);
+      const robe = new THREE.Group(); robe.add(A, B); g.add(robe);
+      DOOR_IT[n] = interactive(robe, t => { A.position.x = (am - 0.06) * t; }, { open:false, dur:0.8 });
+    } else if (kind === 'garage') {                                // sectional door: rolls up into the head of the opening
+      const g = frame(a0, m), q = new THREE.Group(); g.add(q); q.position.y = DOOR_H;
+      part(q, len, DOOR_H, 0.03, len / 2, -DOOR_H / 2, 0, M.garageDoor);
+      part(q, 0.3, 0.03, 0.03, len / 2, -DOOR_H + 0.12, -zSign * 0.03, M.doorHw, false);            // lift handle, street side
+      DOOR_IT[n] = interactive(q, t => { q.scale.y = 1 - 0.93 * t; }, { open:false, dur:1.6 });
+      DOOR_IT[n].free = () => [a0, a1];
+    }
+    if (DOOR_IT[n]) DOOR_IT[n].kind = kind;
+  });
+}
 
 // ---------- roof: hipped, 25° pitch, tiled ----------
 // Height = eave + tan(pitch) × Chebyshev distance to the edge of the roof outline. For a footprint made of
@@ -1155,17 +1260,38 @@ const coffee = (L, W) => () => {
   M.steel.metalness = 0.6; M.steel.envMap = M.rim.envMap; M.steel.envMapIntensity = 0.8;
   const body = new THREE.MeshStandardMaterial({ color:0x2a2c2e, roughness:0.7 });
   const x0 = 3.92, x1 = 4.78, d0 = 14.95, d1 = 15.60, H = 1.8, fd = d1 - 0.04, g = 0.006, mid = (x0 + x1) / 2;
-  F(x0 + 0.01, x1 - 0.01, d0, fd, 0, H - 0.01, body);                                   // dark cabinet: shows in the door gaps
+  F(x0 + 0.01, x1 - 0.01, d0, fd, 0, 0.68, body);                                       // freezer section
+  F(x0 + 0.01, x1 - 0.01, d0, fd - 0.42, 0.68, H - 0.01, body);                         // behind the fridge compartment
   F(x0, x0 + 0.012, d0, fd, 0, H, M.steel); F(x1 - 0.012, x1, d0, fd, 0, H, M.steel);    // stainless sides and top
   F(x0 + 0.012, x1 - 0.012, d0, fd, H - 0.012, H, M.steel);
-  F(x0 + g, x1 - g, fd, d1, 0.07, 0.66, M.steel);                                       // freezer drawer
-  F(x0 + g, mid - g, fd, d1, 0.66 + 2 * g, H - g, M.steel);                              // left and right fridge doors
-  F(mid + g, x1 - g, fd, d1, 0.66 + 2 * g, H - g, M.steel);
   F(x0 + 0.02, x1 - 0.02, fd + 0.01, d1 - 0.005, 0, 0.07, body);                          // kick vent
-  F(mid - 0.05, mid - 0.032, d1, d1 + 0.045, 0.95, 1.6, M.rim);                          // door handles
-  F(mid + 0.032, mid + 0.05, d1, d1 + 0.045, 0.95, 1.6, M.rim);
-  F(x0 + 0.12, x1 - 0.12, d1, d1 + 0.045, 0.52, 0.545, M.rim);                           // drawer handle
-  F(x0 + 0.08, x0 + 0.27, d1, d1 + 0.008, 1.05, 1.36, M.trim);                           // water and ice dispenser
+  // inside, seen with a door open: a lit white liner with glass shelves and a few groceries
+  const lit = new THREE.MeshStandardMaterial({ color:0xf4f6f6, emissive:0xdfe8ee, emissiveIntensity:0.35, roughness:0.6 });
+  const cb = fd - 0.42, ct = H - 0.012;                                                    // the compartment: back, sides, roof, floor
+  F(x0 + 0.012, x1 - 0.012, cb, cb + 0.006, 0.68, ct, lit);
+  for (const [a, b] of [[x0 + 0.012, x0 + 0.02], [x1 - 0.02, x1 - 0.012]]) F(a, b, cb, fd, 0.68, ct, lit);
+  F(x0 + 0.02, x1 - 0.02, cb, fd, ct - 0.008, ct, lit); F(x0 + 0.02, x1 - 0.02, cb, fd, 0.68, 0.69, lit);
+  F(mid - 0.02, mid + 0.02, fd - 0.02, fd, 0.69, ct - 0.008, body);                       // centre mullion keeps the door gap dark
+  for (const y of [0.98, 1.24, 1.5]) F(x0 + 0.02, x1 - 0.02, cb + 0.006, fd - 0.01, y, y + 0.008, M.porcelain);   // shelves
+  const food = [0xd8432f, 0xf2c14e, 0x5b8c3a, 0xf7f3ea, 0x3f6fb0, 0xe38b2c];
+  [[0.12, 0.69, 0.16], [0.3, 0.69, 0.12], [0.6, 0.69, 0.2], [0.15, 0.988, 0.18], [0.45, 0.988, 0.1], [0.7, 0.988, 0.15], [0.25, 1.248, 0.14], [0.55, 1.248, 0.2], [0.4, 1.508, 0.12]]
+    .forEach(([fx, y, h], i) => F(x0 + fx - 0.045, x0 + fx + 0.045, fd - 0.3, fd - 0.06, y, y + h, mat(food[i % food.length])));
+  // a door hung on a pivot at its outer front corner; parts are plan boxes, moved into the pivot's frame
+  const hingeAt = (px, pd, parts) => {
+    const g = new THREE.Group(); g.position.set(wx(px), 0, wz(pd)); furn.add(g);
+    g.updateMatrixWorld(true);
+    for (const [a, b, c, d, y0, y1, mm] of parts) { const o = F(a, b, c, d, y0, y1, mm); o.updateMatrixWorld(true); g.attach(o); }
+    return g;
+  };
+  const L = hingeAt(x0 + g, d1, [[x0 + g, mid - g, fd, d1, 0.66 + 2 * g, H - g, M.steel], [mid - 0.05, mid - 0.032, d1, d1 + 0.045, 0.95, 1.6, M.rim],
+    [x0 + 0.08, x0 + 0.27, d1, d1 + 0.008, 1.05, 1.36, M.trim]]);
+  const Rt = hingeAt(x1 - g, d1, [[mid + g, x1 - g, fd, d1, 0.66 + 2 * g, H - g, M.steel], [mid + 0.032, mid + 0.05, d1, d1 + 0.045, 0.95, 1.6, M.rim]]);
+  interactive(L, t => { L.rotation.y = 1.75 * t; });
+  interactive(Rt, t => { Rt.rotation.y = -1.75 * t; });
+  // freezer drawer: slides out with a white basket behind its front
+  const dr = hingeAt(x0, d1, [[x0 + g, x1 - g, fd, d1, 0.07, 0.66, M.steel], [x0 + 0.12, x1 - 0.12, d1, d1 + 0.045, 0.52, 0.545, M.rim],
+    [x0 + 0.04, x1 - 0.04, fd - 0.45, fd - 0.005, 0.1, 0.5, M.porcelain]]);
+  interactive(dr, t => { dr.position.z = wz(d1) - 0.42 * t; });
 }
 // ---------- kitchen, bathrooms and laundry ----------
 // Typical finishes (the listing has no interior photos): white satin cabinet fronts with slim metal handles, dark
@@ -1324,9 +1450,17 @@ const coffee = (L, W) => () => {
     F(2.36, 3.30, 15.24, 15.30, 1.48, 1.5, M.trim);                            // strip light
   });
   // pantry: two tall doors
-  F(3.30, 3.87, 14.95, 15.53, 0.1, 2.2, M.carcass); F(3.30, 3.87, 14.95, 15.48, 0, 0.1, M.trim);
-  for (const [a, b] of [[3.30, 3.585], [3.585, 3.87]]) F(a + 0.003, b - 0.003, 15.53, 15.55, 0.103, 2.197, M.front);
-  F(3.54, 3.552, 15.55, 15.578, 0.9, 1.4, M.rim); F(3.618, 3.63, 15.55, 15.578, 0.9, 1.4, M.rim);
+  F(3.30, 3.87, 14.95, 15.10, 0.1, 2.2, M.carcass); F(3.30, 3.87, 14.95, 15.48, 0, 0.1, M.trim);       // back
+  for (const [a, b] of [[3.30, 3.318], [3.852, 3.87]]) F(a, b, 15.10, 15.53, 0.1, 2.2, M.carcass);    // sides
+  F(3.318, 3.852, 15.10, 15.53, 2.182, 2.2, M.carcass); F(3.318, 3.852, 15.10, 15.53, 0.1, 0.118, M.carcass);
+  for (const y of [0.5, 0.9, 1.3, 1.7]) F(3.318, 3.852, 15.10, 15.52, y, y + 0.018, M.front);   // shelves inside
+  [[3.36, 0.518, 0.2, 0xc9a35b], [3.48, 0.518, 0.14, 0x8c3b2a], [3.66, 0.918, 0.18, 0xe7d7b4], [3.78, 0.918, 0.12, 0x5b6f3a], [3.4, 1.318, 0.22, 0xd8432f],
+   [3.6, 1.318, 0.16, 0xf2efe6], [3.75, 1.718, 0.2, 0x3f6fb0]].forEach(([x, y, h, c]) => F(x - 0.05, x + 0.05, 15.2, 15.42, y, y + h, mat(c)));
+  for (const [a, b, hx, sg] of [[3.30, 3.585, 3.54, 1], [3.585, 3.87, 3.618, -1]]) {
+    const px = sg > 0 ? a + 0.003 : b - 0.003, g = new THREE.Group(); g.position.set(wx(px), 0, wz(15.55)); furn.add(g); g.updateMatrixWorld(true);
+    for (const o of [F(a + 0.003, b - 0.003, 15.53, 15.55, 0.103, 2.197, M.front), F(hx, hx + 0.012, 15.55, 15.578, 0.9, 1.4, M.rim)]) { o.updateMatrixWorld(true); g.attach(o); }
+    interactive(g, t => { g.rotation.y = sg * 1.9 * t; });
+  }
 
   // --- main bathroom ---
   { // bath along the wall under the window: a hollow tub with a tiled-in apron
@@ -1518,7 +1652,20 @@ const coffee = (L, W) => () => {
   const cyl = (w, h, l) => projectUV(new THREE.CylinderGeometry(0.5, 0.5, 1, 20).scale(w, h, l));
   // finishes for the bedside lamps and TVs in the furniture catalogue
   M.shade = new THREE.MeshStandardMaterial({ color:0xf1e8d6, emissive:0xffdcaa, emissiveIntensity:0.35, roughness:0.9, side:THREE.DoubleSide });
+  M.shadeOff = new THREE.MeshStandardMaterial({ color:0xe6ddcb, roughness:0.9, side:THREE.DoubleSide });
   M.screen = new THREE.MeshPhysicalMaterial({ color:0x0b0d10, roughness:0.12, clearcoat:1 });
+  M.screenOn = (() => {                                     // a picture for a switched-on TV: a coastline at golden hour
+    const c = document.createElement('canvas'); c.width = 512; c.height = 288; const g = c.getContext('2d');
+    const sky = g.createLinearGradient(0, 0, 0, 180); sky.addColorStop(0, '#2b5c8f'); sky.addColorStop(1, '#f3b26b');
+    g.fillStyle = sky; g.fillRect(0, 0, 512, 180);
+    g.fillStyle = '#ffe2a6'; g.beginPath(); g.arc(330, 170, 34, 0, 7); g.fill();
+    const sea = g.createLinearGradient(0, 180, 0, 288); sea.addColorStop(0, '#2f6f8f'); sea.addColorStop(1, '#173a52');
+    g.fillStyle = sea; g.fillRect(0, 180, 512, 108);
+    g.fillStyle = 'rgba(255,226,166,0.5)'; for (let i = 0; i < 14; i++) g.fillRect(300 + Math.sin(i) * 30, 186 + i * 6, 60 - i * 3, 2);
+    g.fillStyle = '#d9c08f'; g.beginPath(); g.moveTo(0, 288); g.lineTo(0, 230); g.quadraticCurveTo(160, 210, 240, 288); g.fill();
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+    return new THREE.MeshBasicMaterial({ map:t });
+  })();
 
   // curtains: pleated drapes drawn back to each side of the bedroom and theatre windows, on a ceiling track
   const drape = ph => (w, h, l) => {
@@ -2141,9 +2288,13 @@ renderer.domElement.addEventListener('pointerdown', e => {
 renderer.domElement.addEventListener('pointermove', e => {
   if (walk) return;
   if (!drag) {
-    if (locked || !furn.visible || e.buttons) { if (locked) renderer.domElement.style.cursor = ''; return; }
+    if (e.buttons || (roof && roof.visible)) return;
+    const now = performance.now(); if (now - (hoverT || 0) < 80) return; hoverT = now;   // hover checks at most ~12 times a second
     pick(e);
-    renderer.domElement.style.cursor = firstPiece() && !(roof && roof.visible) ? 'grab' : '';
+    const ct = clickTarget();
+    if (ct && (locked || ct.it)) { renderer.domElement.style.cursor = 'pointer'; return; }
+    if (locked || !furn.visible) { renderer.domElement.style.cursor = ''; return; }
+    renderer.domElement.style.cursor = firstPiece() ? 'grab' : '';
     return;
   }
   pick(e);
@@ -2155,13 +2306,35 @@ renderer.domElement.addEventListener('pointermove', e => {
   else if (!blocked(p, ox, nz, r)) { p.position.set(ox, 0, nz); flash(); }
   else flash();
 });
+// what a click lands on: the nearest visible thing; doors, fridge, pantry and sliders toggle, and so do TVs and lamps
+// while the furniture is locked (unlocked, a click picks the piece up instead)
+let hoverT = 0;
+const SWITCH = new Map([[M.screen, M.screenOn], [M.screenOn, M.screen], [M.shade, M.shadeOff], [M.shadeOff, M.shade]]);
+const inDoors = o => { for (; o; o = o.parent) if (o === doorGroup) return true; return false; };
+const shown = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+function clickTarget(maxDist = Infinity) {
+  const hit = ray.intersectObjects([doorGroup, furn, wallGroup], true)
+    .find(h => !h.object.userData.isOutline && shown(h.object) && !(cut && !walk && h.point.y > H_CUT + 0.02 && inDoors(h.object)));
+  if (!hit || hit.distance > maxDist) return null;
+  if (hit.object.userData.inter) return { it:hit.object.userData.inter };
+  if (SWITCH.has(hit.object.material) && (locked || walk) && pieceOf(hit.object)) return { mesh:hit.object };
+  return null;
+}
+function activate(t) {
+  if (!t) return false;
+  if (t.it) t.it.open = !t.it.open; else t.mesh.material = SWITCH.get(t.mesh.material);
+  moved(); return true;
+}
 function endDrag(e) {
   if (drag) {
     renderer.domElement.releasePointerCapture(drag.id); drag = null;
     controls.enabled = true; renderer.domElement.style.cursor = 'grab'; saveLayout(); return;
   }
   // a click on empty space (not an orbit drag) clears the selection
-  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4 && e.target === renderer.domElement) select(null);
+  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4 && e.target === renderer.domElement && !walk) {
+    if (!(roof && roof.visible)) { pick(e); if (activate(clickTarget())) return; }
+    select(null);
+  }
 }
 renderer.domElement.addEventListener('pointerup', endDrag);
 renderer.domElement.addEventListener('pointercancel', endDrag);
@@ -2404,7 +2577,12 @@ function wallAt(x, z) {
   if (i < 0 || j < 0 || i >= NX || j >= ND) return false;
   const c = grid[j * NX + i];
   if (c === 1 || c >= 200) return true;
-  return c >= 100 && ['garage', 'robe'].includes(DOORS[c - 100][4]);   // other doors and sliders count as open
+  if (c < 100) return false;
+  const it = DOOR_IT[c - 100];
+  if (!it || it.kind === 'robe') return true;                    // robes are cupboards: never walked into
+  if (it.open && it.t > 0.6) { const a = DOORS[c - 100][0] === DOORS[c - 100][2] ? pd : px, [lo, hi] = it.free(it.t); return a < lo || a > hi; }
+  if (!it.open && it.kind !== 'garage') { it.open = true; moved(); }   // walk into a door and it opens for you
+  return true;
 }
 function walkBlocked(x, z) {
   const [px, pd] = toPlan(x, z);
@@ -2483,13 +2661,27 @@ cvs.addEventListener('pointerdown', e => {
     try { const r = cvs.requestPointerLock({ unadjustedMovement:true }); if (r && r.catch) r.catch(plain); } catch (err) { plain(); }
   }
   lookPtr = { id:e.pointerId, x:e.clientX, y:e.clientY };
+  wClick = { x:e.clientX, y:e.clientY, mv:0, locked:document.pointerLockElement === cvs };
   try { cvs.setPointerCapture(e.pointerId); } catch (err) {}
+});
+// a click that doesn't turn the view uses what's in front: the centre of the screen with the pointer locked
+let wClick = null;
+function useAhead(e) {
+  if (!walk) return;
+  if (e && !document.pointerLockElement) pick(e); else { ndc.set(0, 0); ray.setFromCamera(ndc, camera); }
+  activate(clickTarget(2.6));
+}
+cvs.addEventListener('pointerup', e => {
+  if (!walk || !wClick) return;
+  const c = wClick; wClick = null;
+  if (c.locked ? c.mv < 8 : Math.hypot(e.clientX - c.x, e.clientY - c.y) < 6) useAhead(c.locked ? null : e);
 });
 cvs.addEventListener('pointermove', e => {
   if (!walk) return;
   if (document.pointerLockElement === cvs) {
     if (skipLock > 0) { skipLock--; return; }                     // first events after locking can carry a bogus jump
     const mx = e.movementX, my = e.movementY;
+    if (wClick) wClick.mv += Math.abs(mx) + Math.abs(my);
     if (Math.abs(mx) > 120 || Math.abs(my) > 120) return;          // drop one-off spikes instead of spinning the view
     look.yaw -= mx * 0.0025; look.pitch -= my * 0.0025; applyLook(); return;
   }
@@ -2526,6 +2718,7 @@ stickEl.addEventListener('pointerup', endStick); stickEl.addEventListener('point
 addEventListener('keydown', e => {
   if (!walk || (e.target.closest && e.target.closest('select, input'))) return;
   if (e.key === 'Escape') { if (!document.pointerLockElement) exitWalk(); return; }
+  if (e.key.toLowerCase() === 'e' && !e.repeat) { useAhead(null); return; }
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (['w', 'a', 's', 'd', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Shift'].includes(k)) { keys.add(k); e.preventDefault(); }
 });
@@ -2628,7 +2821,18 @@ function fitSprites() {
 }
 // a first visit (nothing saved in this browser yet) opens with the default layout's view and settings
 if (!restored) { applySettings(DEFAULT_SETTINGS); saveLayout(); }   // saved, so your own later changes to the view stick
+let lastT = performance.now();
+function stepInter() {
+  const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  for (const it of INTER) {
+    const goal = it.open ? 1 : 0;
+    if (it.t === goal) continue;
+    it.t = goal > it.t ? Math.min(goal, it.t + dt / it.dur) : Math.max(goal, it.t - dt / it.dur);
+    it.apply(ease(it.t)); moved();
+  }
+}
 renderer.setAnimationLoop(() => {
+  stepInter();
   dims.visible = dimsOn && !walk;
   fitSprites();
   if (walk) stepWalk(); else { if (fly) stepFly(); controls.update(); }
