@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>House Floor Plan</title>
+<style>
+  :root { --bg:#f4f1ea; --ink:#2b2b2b; --muted:#666; --card:#fff; --line:#e3e0d8; --head:#ece8de; }
+  body { margin:0; font-family: system-ui, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 16px; display:grid; grid-template-columns: minmax(0,1.05fr) minmax(0,1fr); gap:20px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 18px 0 6px; }
+  p.sub { margin: 0 0 10px; color:var(--muted); font-size: 14px; }
+  .note { background:#e8f3e8; border:1px solid #9cc79c; padding:8px 12px; border-radius:6px; font-size:13px; margin-bottom:12px; }
+  svg { width:100%; height:auto; background:var(--card); border:1px solid #ccc; border-radius:6px; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; background:var(--card); }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:var(--head); }
+  td.n { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; margin:8px 0; }
+  .legend span { display:inline-flex; align-items:center; gap:4px; }
+  .sw { width:14px; height:14px; border:1px solid #555; display:inline-block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>House floor plan</h1>
+    <p class="sub">Floor plan: 4 bed, 2 bath, home theatre, double garage</p>
+    <div class="note">Redrawn from the approved council plans (floor plan at 1:100). Room sizes are internal, wall to wall, taken from the dimension strings on the plan. Treat this as a reference copy, not a construction drawing.</div>
+    <svg id="plan" role="img" aria-label="Floor plan of the house, street at the bottom"></svg>
+    <div class="legend">
+      <span><i class="sw" style="background:#fdfbf6"></i>Bedroom / theatre</span>
+      <span><i class="sw" style="background:#e3f0f5"></i>Wet area</span>
+      <span><i class="sw" style="background:#fbf1de"></i>Kitchen / living</span>
+      <span><i class="sw" style="background:#f0ede6"></i>Hall / storage</span>
+      <span><i class="sw" style="background:#e9e6df"></i>Garage</span>
+      <span><i class="sw" style="background:#e6f1e0"></i>Outdoor</span>
+      <span><i class="sw" style="background:#c0392b"></i>Door / slider</span>
+    </div>
+  </div>
+  <div>
+    <h1>Room schedule</h1>
+    <p class="sub">Internal sizes (width × depth, as drawn with the street at the bottom), from the approved floor plan.</p>
+    <table>
+      <thead><tr><th>Room</th><th class="n">Size (m)</th><th class="n">≈ m²</th></tr></thead>
+      <tbody id="rooms"></tbody>
+    </table>
+
+    <h2>Official areas (from the plan)</h2>
+    <table>
+      <tbody>
+        <tr><td>House (living area)</td><td class="n">133.30 m²</td></tr>
+        <tr><td>Garage</td><td class="n">33.25 m²</td></tr>
+        <tr><td>Alfresco</td><td class="n">15.85 m²</td></tr>
+        <tr><td>Porch</td><td class="n">1.33 m²</td></tr>
+        <tr><th>Total under roof</th><th class="n">183.73 m²</th></tr>
+        <tr><td>Site area</td><td class="n">303.00 m²</td></tr>
+        <tr><td>Lot size</td><td class="n">10.09 × 30.00 m</td></tr>
+        <tr><td>Site coverage</td><td class="n">55.6 %</td></tr>
+        <tr><td>Overall house size</td><td class="n">9.99 × 22.87 m</td></tr>
+        <tr><td>Front setback (to Bed 2)</td><td class="n">4.0 m</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Notes from the plans</h2>
+    <table>
+      <tbody>
+        <tr><td>Boundary walls</td><td>Zero-lot walls on both side boundaries: the garage on the left, Bed 2 and Bed 3 on the right.</td></tr>
+        <tr><td>Ceilings</td><td>Coffered ceiling (250 mm) in the master suite.</td></tr>
+        <tr><td>Air conditioning</td><td>Split systems on the master suite side wall and the family room side wall.</td></tr>
+        <tr><td>Hot water</td><td>5-star gas storage hot water system on a slab, on the left side by the meals area.</td></tr>
+        <tr><td>Meter box</td><td>Gas / electric meter box at the front, beside the porch.</td></tr>
+        <tr><td>Roof</td><td>Tiled, 25° pitch, 186.22 m² roof area.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<script>
+// Metres. x = 0 at the left lot boundary (garage side), d = 0 at the front face of Bed 2, increasing toward the rear.
+const S = 30, PAD = 28;
+const LOT_W = 10.09, LOT_D = 30.0, FRONT = 4.0, HOUSE_D = 22.73;
+const BACK = LOT_D - FRONT - HOUSE_D;
+const OX = 0.05; // house sits 50 mm in from the left boundary (zero-lot walls both sides)
+const W = LOT_W * S + PAD * 2, H = LOT_D * S + PAD * 2 + 22;
+const svg = document.getElementById('plan');
+svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+const NS = 'http://www.w3.org/2000/svg';
+const X = x => PAD + (x + OX) * S;
+const Y = d => PAD + (HOUSE_D + BACK - d) * S;   // street at the bottom
+function el(tag, a, text) { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); if (text != null) e.textContent = text; svg.appendChild(e); return e; }
+function rect(x0, x1, d0, d1, fill, extra = {}) { return el('rect', Object.assign({ x:X(x0), y:Y(d1), width:(x1-x0)*S, height:(d1-d0)*S, fill }, extra)); }
+function text(t, x, d, o = {}) {
+  const a = { x:X(x), y:Y(d), 'font-size':o.fs || 11, 'text-anchor':'middle', fill:o.c || '#222', 'font-weight':o.w || 400 };
+  if (o.rot) a.transform = `rotate(${o.rot} ${X(x)} ${Y(d)})`;
+  return el('text', a, t);
+}
+const C = { bed:'#fdfbf6', wet:'#e3f0f5', live:'#fbf1de', hall:'#f0ede6', garage:'#e9e6df', out:'#e6f1e0', wall:'#3a3a3a' };
+const rooms = [];
+// room: interior rectangle; label + size shown when big enough; listed in the schedule when `list` is set
+function room(name, x0, x1, d0, d1, kind, o = {}) {
+  rect(x0, x1, d0, d1, C[kind]);
+  const w = (x1 - x0), d = (d1 - d0);
+  if (o.list !== false && name) rooms.push([name, w, d, o.size]);
+  if (!name || o.nolabel) return;
+  const cx = (x0 + x1) / 2, cd = (d0 + d1) / 2 + (o.dy || 0);
+  if (o.rot) { text(name, cx, cd, { fs:o.fs || 9, rot:o.rot }); return; }
+  text(name, cx, cd + (o.small ? -0.05 : 0.12), { fs:o.fs || 11, w:o.bold ? 600 : 400 });
+  if (!o.small) text(o.size || `${w.toFixed(2)} × ${d.toFixed(2)}`, cx, cd - 0.42, { fs:8.5, c:'#666' });
+}
+function door(x0, d0, x1, d1) { el('line', { x1:X(x0), y1:Y(d0), x2:X(x1), y2:Y(d1), stroke:'#c0392b', 'stroke-width':3.5 }); }
+
+// ---- site ----
+el('rect', { x:X(-OX), y:Y(HOUSE_D + BACK), width:LOT_W*S, height:LOT_D*S, fill:C.out, stroke:'#8a8a8a', 'stroke-dasharray':'4 4' });
+rect(0.3, 5.6, -FRONT, 0.86, '#d9d6cf');                           // driveway to garage
+text('Driveway', 2.95, -2.2, { fs:11, c:'#555' });
+text('Front garden', 8.2, -2.2, { fs:10, c:'#555' });
+text('Rear garden', LOT_W / 2 - OX, HOUSE_D + BACK / 2 - 0.1, { fs:11, c:'#555' });
+text('STREET', LOT_W / 2 - OX, -FRONT - 0.75, { fs:13, w:600, c:'#333' });
+text('Lot · 10.09 × 30.00 m · 303 m²', LOT_W / 2 - OX, HOUSE_D + BACK + 0.25, { fs:9, c:'#666' });
+
+// ---- structure (walls show as the dark gaps between rooms) ----
+rect(0, 5.90, 0.86, 6.65, C.wall);       // garage block
+rect(5.80, 9.99, 0, 8.35, C.wall);       // entry + Bed 2 / Bed 3 block
+rect(1.00, 8.99, 6.55, 13.75, C.wall);   // theatre / master / bath / Bed 4 band
+rect(1.00, 1.50, 13.75, 15.09, C.wall);  // master rear corner
+rect(1.50, 8.49, 13.75, 20.29, C.wall);  // laundry + kitchen / meals / family (narrower, 7.0 m)
+rect(4.51, 8.49, 20.29, 20.60, C.wall);  // family steps back 0.3 m
+
+// ---- front ----
+room('Double garage', 0.09, 5.80, 1.05, 6.55, 'garage', { bold:true });
+rect(5.90, 6.94, 0, 0.86, C.out); text('Porch', 6.42, 0.35, { fs:8 });
+room('Entry', 5.90, 6.94, 1.05, 7.86, 'hall', { rot:-90, fs:9, list:false });
+room('Bed 2', 7.03, 9.76, 0.25, 3.42, 'bed', { bold:true });
+room('', 7.03, 7.96, 3.51, 4.62, 'hall');                         // little passage to Bed 2 / Bed 3
+rect(6.94, 7.03, 3.59, 4.53, C.hall);                              // opening from the entry
+room('Robe', 8.05, 9.76, 3.51, 4.02, 'hall', { small:true, fs:8, list:false });
+room('Robe', 8.05, 9.76, 4.11, 4.62, 'hall', { small:true, fs:8, list:false });
+room('Bed 3', 7.03, 9.76, 4.71, 7.86, 'bed', { bold:true });
+
+// ---- hall spine ----
+room('Hall', 4.87, 5.80, 6.65, 16.0, 'hall', { rot:-90, fs:9, list:false });
+rect(5.80, 5.90, 6.65, 7.86, C.hall);                              // open link entry <-> hall
+rect(5.80, 5.90, 9.75, 10.68, C.hall);                             // open link hall <-> WC passage
+
+// ---- left side ----
+room('Home theatre', 1.23, 4.78, 6.65, 9.83, 'bed', { bold:true });
+rect(4.78, 4.87, 8.12, 9.63, C.bed);                               // 1.5 m open doorway to the hall
+room('Ens', 1.23, 3.56, 9.93, 11.43, 'wet', { small:true, fs:9, size:'2.33 × 1.50' });
+room('WIR', 3.65, 4.78, 9.93, 11.43, 'hall', { small:true, fs:9, size:'1.13 × 1.50' });
+room('Master suite', 1.23, 4.78, 11.51, 14.86, 'bed', { bold:true });
+
+// ---- right side ----
+room('Bath', 5.90, 8.75, 7.95, 9.66, 'wet', { bold:true });
+room('', 5.90, 6.80, 9.75, 10.68, 'hall');
+text('MH', 6.35, 10.1, { fs:7, c:'#666' });
+room('WC', 6.90, 8.75, 9.75, 10.68, 'wet', { small:true, fs:9, size:'1.85 × 0.93' });
+room('Bed 4', 5.90, 8.75, 10.77, 13.66, 'bed', { bold:true });
+room('Robe', 5.90, 7.05, 13.75, 14.25, 'hall', { small:true, fs:8, list:false });
+room('Linen', 7.13, 8.26, 13.75, 14.25, 'hall', { small:true, fs:8, list:false });
+room('Laundry', 5.90, 8.26, 14.34, 15.91, 'wet', { bold:true });
+
+// ---- rear open plan: kitchen / meals (left) + family (right) ----
+rect(1.73, 4.78, 14.95, 16.0, C.live);
+rect(4.78, 4.87, 15.70, 16.0, C.live);
+rect(1.73, 8.26, 16.0, 20.06, C.live);
+rect(4.82, 8.26, 20.06, 20.35, C.live);
+rooms.push(['Kitchen / meals', 3.05, 5.11], ['Family', 3.39, 4.35]);
+// kitchen fittings
+rect(1.73, 2.36, 14.95, 16.77, '#d6d6d6', { stroke:'#999' }); text('cooktop', 2.05, 15.9, { fs:7, c:'#555', rot:-90 });
+rect(2.36, 3.30, 14.95, 15.55, '#d6d6d6', { stroke:'#999' });
+rect(1.73, 4.78, 16.77, 17.43, '#d6d6d6', { stroke:'#999' }); text('sink · DW', 3.0, 16.98, { fs:7, c:'#555' });
+rect(3.30, 4.78, 14.95, 15.60, '#c8c8c8', { stroke:'#999' }); text('pantry · fridge', 4.04, 15.17, { fs:6.5, c:'#444' });
+text('Kitchen', 3.4, 16.05, { fs:11, w:600 });
+text('Meals', 3.1, 18.85, { fs:11, w:600 }); text('2.8 wide', 3.1, 18.45, { fs:8.5, c:'#666' });
+text('Family', 6.6, 18.3, { fs:11, w:600 }); text('3.39 × 4.35', 6.6, 17.9, { fs:8.5, c:'#666' });
+text('A/C', 8.0, 17.5, { fs:7, c:'#666' });
+text('A/C', 1.55, 13.0, { fs:7, c:'#666' });
+
+// ---- outdoor ----
+room('Alfresco', 1.45, 8.45, 20.6, HOUSE_D, 'out', { bold:true, size:'≈ 7.0 × 2.1 · 15.85 m²', list:false });
+rect(1.50, 4.51, 20.29, 20.6, C.out);
+el('rect', { x:X(1.45), y:Y(HOUSE_D), width:7.0*S, height:(HOUSE_D-20.29)*S, fill:'none', stroke:'#777', 'stroke-dasharray':'6 4' });
+text('Side yard', 0.5, 12.5, { fs:9, c:'#555', rot:-90 });
+text('Side yard', 9.4, 15.5, { fs:9, c:'#555', rot:-90 });
+text('HWS', 0.75, 16.4, { fs:7, c:'#555', rot:-90 });
+text('meter', 5.45, 0.4, { fs:7, c:'#555' });
+
+// ---- doors (red) and windows (blue), positions read off the council plan ----
+door(0.35, 0.955, 5.16, 0.955);     // garage sectional door (4.81 m)
+door(5.95, 0.955, 6.89, 0.955);     // front door (820)
+door(0.25, 6.60, 0.95, 6.60);       // garage side door to the side yard (720)
+door(4.95, 6.60, 5.75, 6.60);       // garage -> hall (820, metal frame)
+door(7.10, 3.465, 7.90, 3.465);     // Bed 2 (820)
+door(7.10, 4.665, 7.90, 4.665);     // Bed 3 (820)
+door(4.825, 11.58, 4.825, 12.42);   // master suite (820)
+door(1.97, 11.47, 2.62, 11.47);     // ensuite (620 cavity slider)
+door(3.68, 11.47, 4.28, 11.47);     // WIR (630)
+door(5.95, 9.705, 6.70, 9.705);     // bath (720)
+door(6.85, 9.95, 6.85, 10.60);      // WC (620)
+door(5.95, 10.725, 6.78, 10.725);   // Bed 4 (820)
+door(6.02, 13.705, 6.90, 13.705);   // Bed 4 robe (820)
+door(5.85, 14.40, 5.85, 15.24);     // laundry (820)
+door(7.24, 14.295, 8.14, 14.295);   // linen, off the laundry (820)
+door(8.375, 14.40, 8.375, 15.88);   // laundry slider to side yard (1510)
+door(1.615, 17.90, 1.615, 19.98);   // meals side slider (2110)
+door(2.40, 20.175, 4.50, 20.175);   // meals slider to alfresco (2110)
+door(5.50, 20.475, 7.60, 20.475);   // family slider to alfresco (2110)
+function win(x0, d0, x1, d1) { el('line', { x1:X(x0), y1:Y(d0), x2:X(x1), y2:Y(d1), stroke:'#2e86c1', 'stroke-width':3 }); }
+win(7.69, 0.125, 9.20, 0.125);      // Bed 2 front (1510)
+win(1.115, 6.78, 1.115, 9.80);      // theatre highlight (3010)
+win(1.115, 10.28, 1.115, 11.19);    // ensuite, obscure (910)
+win(1.115, 11.68, 1.115, 14.70);    // master highlight (3010)
+win(8.87, 8.39, 8.87, 9.40);        // bath, obscure (1010)
+win(8.87, 9.79, 8.87, 10.59);       // WC, obscure (810)
+win(8.87, 11.19, 8.87, 13.30);      // Bed 4 highlight (2110)
+win(8.99, 8.10, 9.70, 8.10);        // Bed 3 rear corner (710)
+
+// ---- room schedule ----
+const tb = document.getElementById('rooms');
+for (const [n, w, d, size] of rooms) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${n}</td><td class="n">${size || (w.toFixed(2) + ' × ' + d.toFixed(2))}</td><td class="n">${(w * d).toFixed(1)}</td>`;
+  tb.appendChild(tr);
+}
+</script>
+</body>
+</html>
