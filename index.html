@@ -2012,6 +2012,12 @@ const extent = parts => {
 };
 const DIM_MIN = 0.05, DIM_MAX = 12;
 const okDim = d => Array.isArray(d) && d.length === 3 && d.every(v => Number.isFinite(v) && v >= DIM_MIN && v <= DIM_MAX);
+// drop parts that sit wholly inside another part (a cushion inside a seat's box): they can never be what collides
+function pruneBoxes(bs) {
+  const e = 0.001, inside = (a, b) => a.x0 >= b.x0 - e && a.x1 <= b.x1 + e && a.z0 >= b.z0 - e && a.z1 <= b.z1 + e && a.y0 >= b.y0 - e && a.y1 <= b.y1 + e;
+  return bs.filter((a, i) => a.x1 - a.x0 > e && a.z1 - a.z0 > e && a.y1 - a.y0 > e &&
+    !bs.some((b, j) => j !== i && inside(a, b) && (!inside(b, a) || j < i)));
+}
 function build(g) {
   for (const ch of [...g.children]) if (!ch.userData.isOutline) { g.remove(ch); ch.geometry.dispose(); }
   const fp = { x0:Infinity, x1:-Infinity, z0:Infinity, z1:-Infinity, h:0 };   // footprint, used for collisions
@@ -2021,14 +2027,17 @@ function build(g) {
   const fin = g.userData.fin || {}, swap = new Map(Object.entries(fin).map(([s, n]) => [FIN[s].m, finMat(s, n)]));
   g.userData.slots = finSlots(parts);
   const fx = g.userData.flip ? -sx : sx;                         // flipped: mirrored side to side (e.g. a chaise on the other end)
+  const boxes = [];
   for (let [cx, cz, w, l, y0, y1, m, make] of parts) {
     cx *= fx; w *= sx; cz *= sz; l *= sz; y0 *= sy; y1 *= sy;
     const mesh = new THREE.Mesh(make ? make(w, y1 - y0, l) : metricBox(w, y1 - y0, l), swap.get(m) || m);
     mesh.position.set(cx, (y0 + y1) / 2, cz); mesh.castShadow = mesh.receiveShadow = true; g.add(mesh);
     fp.x0 = Math.min(fp.x0, cx - w / 2); fp.x1 = Math.max(fp.x1, cx + w / 2);
     fp.z0 = Math.min(fp.z0, cz - l / 2); fp.z1 = Math.max(fp.z1, cz + l / 2); fp.h = Math.max(fp.h, y1);
+    boxes.push({ x0:cx - w / 2, x1:cx + w / 2, z0:cz - l / 2, z1:cz + l / 2, y0, y1 });
   }
-  g.userData.fp = fp;
+  g.userData.fp = fp;                                            // overall footprint: the selection outline
+  g.userData.boxes = pruneBoxes(boxes);                          // what collides: the parts actually drawn
 }
 function addPiece(t, v, x, z, r = 0, dim = null, fin = null, flip = false) {
   const g = new THREE.Group(); g.userData = { t, v: v in CAT[t].variants ? v : CAT[t].def, dim: okDim(dim) ? dim.map(n => +n.toFixed(3)) : null, fin:okFin(fin), flip:flip === true };
@@ -2043,8 +2052,8 @@ const Q = Math.PI / 2;
 // starting layout (the "Layout 24 Nov" arrangement): pieces as an exported layout file has them, in world metres
 const DEFAULT_LAYOUT = [
   {t:'bed',v:'King',x:-2.694,z:-2.46,r:-4.7124,f:{wood:'Light oak'}},
-  {t:'side',v:'Standard',x:-3.534,z:-3.625,r:-4.7124,m:true},
-  {t:'side',v:'Standard',x:-3.555,z:-1.282,r:-4.7124},
+  {t:'side',v:'Standard',x:-3.534,z:-3.665,r:-4.7124,m:true},
+  {t:'side',v:'Standard',x:-3.555,z:-1.252,r:-4.7124},
   {t:'bed',v:'Single',x:3.803,z:4.219,r:0},
   {t:'bed',v:'King single',x:3.181,z:-1.584,r:-12.5664},
   {t:'dining',v:'6-seat',x:-1.9,z:-7.8,r:0},
@@ -2059,8 +2068,8 @@ const DEFAULT_LAYOUT = [
   {t:'desk',v:'1.2 m',x:1.206,z:-0.672,r:-4.7124,f:{fabric:'Charcoal'}},
   {t:'desk',v:'1.2 m',x:1.207,z:-1.864,r:-4.7124},
   {t:'side',v:'Standard',x:2.523,z:10.405,r:-4.7124},
-  {t:'side',v:'Standard',x:3.096,z:3.346,r:0,f:{wood:'Light oak'}},
-  {t:'side',v:'Standard',x:4.52,z:3.347,r:0,f:{wood:'Light oak'},m:true},
+  {t:'side',v:'Standard',x:3.056,z:3.346,r:0,f:{wood:'Light oak'}},
+  {t:'side',v:'Standard',x:4.55,z:3.347,r:0,f:{wood:'Light oak'},m:true},
   {t:'rug',v:'1.6 x 2.3 m',x:3.4,z:9,r:0},
   {t:'rug',v:'1.6 x 2.3 m',x:3.4,z:4.45,r:0},
   {t:'rug',v:'1.6 x 2.3 m',x:2.4,z:-1.2,r:1.5708},
@@ -2313,40 +2322,104 @@ function sat(A, B) {
 // solid walls and window walls are obstacles; door openings are not
 const WALL_OBS = WALL_RECTS.filter(r => r.c === 1 || r.c >= 200)
   .map(r => corners({ x0:wx(r.x0), x1:wx(r.x1), z0:wz(r.d1), z1:wz(r.d0) }, 0, 0, 0, 0));
+// Everything collides by what is drawn: each part is a rectangle on the floor (rotated with its object) plus the
+// height range it occupies, so a chair can tuck under a desk top, and two parts only collide when they overlap in
+// plan AND in height. Walls are full height.
+const rectOf = (C, y0, y1) => ({ C, y0, y1, x0:Math.min(C[0][0], C[1][0], C[2][0], C[3][0]), x1:Math.max(C[0][0], C[1][0], C[2][0], C[3][0]),
+                                          z0:Math.min(C[0][1], C[1][1], C[2][1], C[3][1]), z1:Math.max(C[0][1], C[1][1], C[2][1], C[3][1]) });
+const hits = (a, b) => a.y0 < b.y1 - 0.002 && b.y0 < a.y1 - 0.002 && a.x0 < b.x1 && b.x0 < a.x1 && a.z0 < b.z1 && b.z0 < a.z1 && sat(a.C, b.C);
+const WALL_RECTS_C = WALL_OBS.map(C => rectOf(C, -1, 99));
+// a piece's parts at a given position and turn (cached for where it stands now)
+function partRects(p, x = p.position.x, z = p.position.z, r = p.rotation.y) {
+  const key = x + ',' + z + ',' + r, c = p.userData._rc;
+  if (c && c.key === key && c.boxes === p.userData.boxes) return c;
+  const out = { key, boxes:p.userData.boxes, all:rectOf(corners(p.userData.fp, x, z, r), 0, p.userData.fp.h),
+                rects:p.userData.boxes.map(b => rectOf(corners(b, x, z, r), b.y0, b.y1)) };
+  if (x === p.position.x && z === p.position.z && r === p.rotation.y) p.userData._rc = out;
+  return out;
+}
 // built-ins (kitchen benches and island, vanities, laundry, bath, shower screens, toilets, robe shelving, garage
-// shelving...) are obstacles too: everything fixed in the furniture group that stands on or near the floor. Worked out
-// once, the first time it's needed, as a footprint rectangle per part.
-let BUILT_OBS = null;
+// shelving, the fridge and pantry...): every drawn part of the fixed fittings, at its real height. Worked out once,
+// the first time it's needed, and kept in a 0.5 m grid. Parts that open (fridge doors and drawer, pantry doors) are
+// kept apart and re-measured whenever they move.
+let BUILT_OBS = null, BUILT_GRID = null, DYN_MESH = [], DYN_OBS = [], dynDirty = true, obsQ = 0;
+const CELL = 0.5, cellOf = v => Math.floor(v / CELL);
+const _v = new THREE.Vector3();
+function meshRect(o) {                                           // a mesh's own box, carried by its world transform
+  if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+  const b = o.geometry.boundingBox, C = [];
+  let y0 = Infinity, y1 = -Infinity;
+  for (const [x, z] of [[b.min.x, b.min.z], [b.max.x, b.min.z], [b.max.x, b.max.z], [b.min.x, b.max.z]]) {
+    for (const y of [b.min.y, b.max.y]) { _v.set(x, y, z).applyMatrix4(o.matrixWorld); y0 = Math.min(y0, _v.y); y1 = Math.max(y1, _v.y); }
+    _v.set(x, b.min.y, z).applyMatrix4(o.matrixWorld); C.push([_v.x, _v.z]);
+  }
+  return rectOf(C, y0, y1);
+}
+const noCollide = o => (Array.isArray(o.material) ? o.material : [o.material]).some(m => NO_COLLIDE.has(m));
 function builtObs() {
   if (BUILT_OBS) return BUILT_OBS;
-  BUILT_OBS = []; furn.updateMatrixWorld(true);
-  const bx = new THREE.Box3();
-  for (const o of furn.children) {
-    if (o === wallHung || movables.includes(o)) continue;
-    let skip = false; o.traverse(c => { if (c.material && NO_COLLIDE.has(c.material)) skip = true; });
-    if (skip) continue;
-    bx.setFromObject(o);
-    if (bx.isEmpty() || bx.min.y > 0.3 || bx.max.y < 0.08) continue;          // hung above reach, or flat on the floor
-    if (bx.max.x - bx.min.x < 0.005 || bx.max.z - bx.min.z < 0.005) continue;
-    BUILT_OBS.push({ C:corners({ x0:bx.min.x, x1:bx.max.x, z0:bx.min.z, z1:bx.max.z }, 0, 0, 0, 0), x0:bx.min.x, x1:bx.max.x, z0:bx.min.z, z1:bx.max.z });
+  furn.updateMatrixWorld(true);
+  const cand = []; DYN_MESH = [];
+  const visit = o => {
+    if (o === wallHung || movables.includes(o) || o.userData.isOutline) return;
+    if (o.isMesh && !noCollide(o)) {
+      if (o.userData.inter) DYN_MESH.push(o);
+      else {
+        const r = meshRect(o);
+        if (r.y1 > 0.015 && (r.x1 - r.x0 > 0.02 || r.z1 - r.z0 > 0.02)) cand.push(r);   // not floor decals or knobs
+      }
+    }
+    for (const c of o.children) visit(c);
+  };
+  visit(furn);
+  // a part wholly inside a bigger, square-on part adds nothing
+  const vol = r => (r.x1 - r.x0) * (r.z1 - r.z0) * (r.y1 - r.y0), square = r => Math.abs(r.C[0][0] - r.C[1][0]) < 1e-4 || Math.abs(r.C[0][1] - r.C[1][1]) < 1e-4;
+  cand.sort((a, b) => vol(b) - vol(a));
+  BUILT_OBS = []; BUILT_GRID = new Map();
+  const e = 0.001;
+  for (const r of cand) {
+    let inside = false;
+    nearBuilt(r, b => { if (!inside && square(b) && r.x0 >= b.x0 - e && r.x1 <= b.x1 + e && r.z0 >= b.z0 - e && r.z1 <= b.z1 + e && r.y0 >= b.y0 - e && r.y1 <= b.y1 + e) inside = true; });
+    if (inside) continue;
+    BUILT_OBS.push(r);
+    for (let i = cellOf(r.x0); i <= cellOf(r.x1); i++) for (let j = cellOf(r.z0); j <= cellOf(r.z1); j++) {
+      const k = i * 4096 + j; if (!BUILT_GRID.has(k)) BUILT_GRID.set(k, []); BUILT_GRID.get(k).push(r);
+    }
   }
+  dynDirty = true;
   return BUILT_OBS;
+}
+function nearBuilt(a, fn) {                                      // each fixed part whose grid cells touch a's box, once
+  const q = ++obsQ;
+  for (let i = cellOf(a.x0); i <= cellOf(a.x1); i++) for (let j = cellOf(a.z0); j <= cellOf(a.z1); j++) {
+    const list = BUILT_GRID.get(i * 4096 + j); if (!list) continue;
+    for (const b of list) if (b._q !== q) { b._q = q; fn(b); }
+  }
+}
+function dynObs() {
+  if (dynDirty) { DYN_OBS = DYN_MESH.map(o => { o.updateMatrixWorld(true); return meshRect(o); }); dynDirty = false; }
+  return DYN_OBS;
+}
+// does rectangle a run into any fitting? (skip: fittings a piece already overlaps, so it can be moved clear)
+function hitsFitting(a, skip) {
+  builtObs(); let hit = false;
+  nearBuilt(a, b => { if (!hit && hits(a, b) && !(skip && skip(b))) hit = true; });
+  return hit || dynObs().some(b => hits(a, b) && !(skip && skip(b)));
 }
 function blocked(p, x, z, r) {
   if (overlapOff || FREE.has(p.userData.t)) return false;
-  const A = corners(p.userData.fp, x, z, r);
-  // a piece already overlapping a fitting (from an older layout) may still be moved clear of it
-  const cur = movables.includes(p) ? corners(p.userData.fp, p.position.x, p.position.z, p.rotation.y) : null;
-  const ax0 = Math.min(...A.map(c => c[0])), ax1 = Math.max(...A.map(c => c[0])), az0 = Math.min(...A.map(c => c[1])), az1 = Math.max(...A.map(c => c[1]));
-  for (const b of builtObs()) {
-    if (b.x1 <= ax0 || b.x0 >= ax1 || b.z1 <= az0 || b.z0 >= az1) continue;
-    if (sat(A, b.C) && !(cur && sat(cur, b.C))) return true;
-  }
+  const A = partRects(p, x, z, r);
+  // a piece already overlapping something (a wall, a fitting or another piece, from an older layout) may still be moved clear of it
+  const cur = movables.includes(p) ? partRects(p).rects : null, was = b => cur && cur.some(c => hits(c, b));
+  for (const a of A.rects) if (hitsFitting(a, was)) return true;
   for (const q of movables) {
     if (q === p || FREE.has(q.userData.t)) continue;
-    if (sat(A, corners(q.userData.fp, q.position.x, q.position.z, q.rotation.y))) return true;
+    const Q = partRects(q);
+    if (!hits(A.all, Q.all)) continue;
+    for (const a of A.rects) for (const b of Q.rects) if (hits(a, b) && !was(b)) return true;
   }
-  return WALL_OBS.some(W => sat(A, W));
+  for (const a of A.rects) for (const W of WALL_RECTS_C) if (hits(a, W) && !was(W)) return true;
+  return false;
 }
 
 // --- selection outline: a box that follows the piece's footprint, red when a move is refused ---
@@ -2783,7 +2856,19 @@ function wallAt(x, z) {
   if (!it.open && it.kind !== 'garage') { it.open = true; moved(); }   // walk into a door and it opens for you
   return true;
 }
-function walkBlocked(x, z) {
+const BODY_Y0 = 0.25, BODY_Y1 = 1.8;                            // a step over anything lower, ducks nothing
+function objectsBlock(x, z) {                                     // fittings and furniture under the body's footprint
+  if (!furn.visible) return false;
+  const me = rectOf(corners({ x0:-BODY_R, x1:BODY_R, z0:-BODY_R, z1:BODY_R }, x, z, 0, 0), BODY_Y0, BODY_Y1);
+  if (hitsFitting(me)) return true;
+  for (const q of movables) {
+    if (FREE.has(q.userData.t)) continue;
+    const Q = partRects(q);
+    if (hits(me, Q.all) && Q.rects.some(b => hits(me, b))) return true;
+  }
+  return false;
+}
+function walkBlocked(x, z, objects = true) {
   const [px, pd] = toPlan(x, z);
   if (px < LOT.x0 + BODY_R || px > LOT.x1 - BODY_R || pd < LOT.d0 - 2 || pd > LOT.d1 - BODY_R) return true;
   // every 5 cm wall cell under the body's circle, so even a 9 cm stud wall can't slip between samples
@@ -2791,14 +2876,7 @@ function walkBlocked(x, z) {
     if (ox * ox + oz * oz > BODY_R * BODY_R) continue;
     if (wallAt(x + ox, z + oz)) return true;
   }
-  if (furn.visible) {
-    const me = corners({ x0:-BODY_R, x1:BODY_R, z0:-BODY_R, z1:BODY_R }, x, z, 0, 0);
-    for (const q of movables) {
-      if (FREE.has(q.userData.t) || q.userData.fp.h < 0.25) continue;
-      if (sat(me, corners(q.userData.fp, q.position.x, q.position.z, q.rotation.y))) return true;
-    }
-  }
-  return false;
+  return objects && objectsBlock(x, z);
 }
 function roomAt(x, z) {
   const [px, pd] = toPlan(x, z);
@@ -2940,10 +3018,10 @@ function stepWalk() {
     f /= Math.max(1, m); s /= Math.max(1, m);
     const sy = Math.sin(look.yaw), cy = Math.cos(look.yaw);
     const dx = (-sy * f + cy * s) * v, dz = (-cy * f - sy * s) * v;
-    const p = camera.position;
-    if (!walkBlocked(p.x + dx, p.z + dz)) { p.x += dx; p.z += dz; }
-    else if (!walkBlocked(p.x + dx, p.z)) p.x += dx;                     // slide along walls
-    else if (!walkBlocked(p.x, p.z + dz)) p.z += dz;
+    const p = camera.position, ob = !objectsBlock(p.x, p.z);            // standing inside something already: walk out of it
+    if (!walkBlocked(p.x + dx, p.z + dz, ob)) { p.x += dx; p.z += dz; }
+    else if (!walkBlocked(p.x + dx, p.z, ob)) p.x += dx;                 // slide along walls
+    else if (!walkBlocked(p.x, p.z + dz, ob)) p.z += dz;
   }
   const room = roomAt(camera.position.x, camera.position.z);
   if (room !== lastRoom) { lastRoom = room; $('walkRoom').textContent = room; }
@@ -3027,7 +3105,7 @@ function stepInter() {
     const goal = it.open ? 1 : 0;
     if (it.t === goal) continue;
     it.t = goal > it.t ? Math.min(goal, it.t + dt / it.dur) : Math.max(goal, it.t - dt / it.dur);
-    it.apply(ease(it.t)); moved();
+    it.apply(ease(it.t)); moved(); dynDirty = true;
   }
 }
 renderer.setAnimationLoop(() => {
