@@ -1342,7 +1342,12 @@ const GROC = (() => {
   M.steel.metalness = 0.6; M.steel.envMap = M.rim.envMap; M.steel.envMapIntensity = 0.8;
   const body = new THREE.MeshStandardMaterial({ color:0x2a2c2e, roughness:0.7 });
   const x0 = 3.92, x1 = 4.78, d0 = 14.95, d1 = 15.60, H = 1.8, fd = d1 - 0.04, g = 0.006, mid = (x0 + x1) / 2;
-  F(x0 + 0.01, x1 - 0.01, d0, fd, 0, 0.68, body);                                       // freezer section
+  // freezer section: solid at the back, then a lit, frosty liner around the cavity the drawer slides out of
+  const frost = new THREE.MeshStandardMaterial({ color:0xe3e9ec, emissive:0xcfdde6, emissiveIntensity:0.25, roughness:0.7 }), fc = fd - 0.48;
+  F(x0 + 0.01, x1 - 0.01, d0, fc, 0, 0.68, body);
+  F(x0 + 0.012, x1 - 0.012, fc, fc + 0.006, 0.07, 0.65, frost);                                                // back
+  F(x0 + 0.012, x0 + 0.02, fc, fd, 0.07, 0.65, frost); F(x1 - 0.02, x1 - 0.012, fc, fd, 0.07, 0.65, frost);    // sides
+  F(x0 + 0.012, x1 - 0.012, fc, fd, 0.65, 0.68, frost); F(x0 + 0.012, x1 - 0.012, fc, fd, 0, 0.07, frost);      // roof, floor
   F(x0 + 0.01, x1 - 0.01, d0, fd - 0.42, 0.68, H - 0.01, body);                         // behind the fridge compartment
   F(x0, x0 + 0.012, d0, fd, 0, H, M.steel); F(x1 - 0.012, x1, d0, fd, 0, H, M.steel);    // stainless sides and top
   F(x0 + 0.012, x1 - 0.012, d0, fd, H - 0.012, H, M.steel);
