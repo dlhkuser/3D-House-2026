@@ -1423,10 +1423,20 @@ const GROC = (() => {
   interactive(L, t => { L.rotation.y = 1.75 * t; });
   interactive(Rt, t => { Rt.rotation.y = -1.75 * t; });
   // freezer drawer: slides out with an open white basket of frozen food behind its front
-  const bk0 = x0 + 0.04, bk1 = x1 - 0.04, bb = fd - 0.45, bf = fd - 0.005, w = 0.008;
-  const dr = hingeAt(x0, d1, [[x0 + g, x1 - g, fd, d1, 0.07, 0.66, M.steel], [x0 + 0.12, x1 - 0.12, d1, d1 + 0.045, 0.52, 0.545, M.rim],
-    [bk0, bk1, bb, bf, 0.41, 0.42, M.porcelain], [bk0, bk1, bb, bf, 0.1, 0.11, M.porcelain], [bk0, bk1, bb, bb + w, 0.1, 0.6, M.porcelain], [bk0, bk1, bf - w, bf, 0.1, 0.6, M.porcelain],
-    [bk0, bk0 + w, bb, bf, 0.1, 0.6, M.porcelain], [bk1 - w, bk1, bb, bf, 0.1, 0.6, M.porcelain]]);
+  // a frosted grey plastic basket with a rolled lip, a ribbed top tray with a divider, and a rubber seal on the front
+  const bk0 = x0 + 0.04, bk1 = x1 - 0.04, bb = fd - 0.45, bf = fd - 0.016, w = 0.012, top = 0.6;
+  const tubM = new THREE.MeshStandardMaterial({ color:0xc9d3d9, roughness:0.45 }), floorM = new THREE.MeshStandardMaterial({ color:0x9fadb6, roughness:0.6 });
+  const lipM = new THREE.MeshStandardMaterial({ color:0xe9eef1, roughness:0.35 }), seal = new THREE.MeshStandardMaterial({ color:0x1b1d1f, roughness:0.9 });
+  const drawerParts = [[x0 + g, x1 - g, fd, d1, 0.07, 0.66, M.steel], [x0 + 0.12, x1 - 0.12, d1, d1 + 0.045, 0.52, 0.545, M.rim],
+    [x0 + g + 0.01, x1 - g - 0.01, fd - 0.012, fd, 0.08, 0.65, seal],                                      // door seal
+    [bk0, bk1, bb, bf, 0.1, 0.11, floorM], [bk0, bk1, bb, bf, 0.405, 0.415, floorM],                        // bin floor, tray floor
+    [bk0, bk1, bb, bb + w, 0.1, top, tubM], [bk0, bk1, bf - w, bf, 0.1, top, tubM],                         // walls
+    [bk0, bk0 + w, bb, bf, 0.1, top, tubM], [bk1 - w, bk1, bb, bf, 0.1, top, tubM],
+    [bk0 - 0.006, bk1 + 0.006, bb - 0.006, bb + w + 0.004, top, top + 0.014, lipM], [bk0 - 0.006, bk1 + 0.006, bf - w - 0.004, bf + 0.004, top, top + 0.014, lipM],
+    [bk0 - 0.006, bk0 + w + 0.004, bb, bf, top, top + 0.014, lipM], [bk1 - w - 0.004, bk1 + 0.006, bb, bf, top, top + 0.014, lipM],
+    [mid - 0.005, mid + 0.005, bb + w, bf - w, 0.415, 0.5, tubM], [mid - 0.008, mid + 0.008, bb + w, bf - w, 0.5, 0.508, lipM]];   // divider
+  for (let x = bk0 + 0.06; x < bk1 - 0.03; x += 0.07) drawerParts.push([x - 0.004, x + 0.004, bb + 0.02, bf - 0.02, 0.415, 0.42, tubM]);   // floor ribs
+  const dr = hingeAt(x0, d1, drawerParts);
   { // frozen food, built in the closed position and carried on the drawer
     const G = GROC, tmp = new THREE.Group(); furn.add(tmp); G.begin(tmp, 0.08);
     const bag = (x, d, yy, w, h, l, label, r = 0) => {           // a soft plastic bag, its print laid across the top
