@@ -152,7 +152,7 @@
   <div class="walkbar"><b id="walkRoom">Entry</b><span>W A S D to move · arrows to turn · Shift to run · drag to look · click or E to open doors · Esc to leave</span><button id="bWalkExit">Exit</button></div>
 </div>
 <div id="stick" class="stick" hidden aria-label="Move"><div id="knob" class="knob"></div></div>
-<div class="hint">Drag empty space to orbit · click doors, the fridge or a TV to use them · right-drag or two-finger drag to pan · scroll or pinch to zoom</div>
+<div class="hint">Drag empty space to orbit · click doors, curtains, the fridge or a TV to use them · right-drag or two-finger drag to pan · scroll or pinch to zoom</div>
 <div id="err">Couldn't load the 3D library. This page needs an internet connection to fetch three.js.</div>
 
 <script type="module">
@@ -911,8 +911,11 @@ for (const m of [M.doorLeaf, M.doorHw, M.jamb, M.alu, M.slideGlass, M.frontDoor,
       part(A, am + 0.03, H, 0.024, (am + 0.03) / 2, H / 2 + 0.01, 0, M.robeDoor);
       part(B, am + 0.03, H, 0.024, am - 0.03 + (am + 0.03) / 2, H / 2 + 0.01, 0, M.robeDoor);
       for (const [q, x] of [[A, 0.06], [B, len - 0.06]]) for (const sd of [-1, 1]) part(q, 0.02, 0.24, 0.008, x, 1.05, sd * 0.016, M.doorHw, false);
-      const robe = new THREE.Group(); robe.add(A, B); g.add(robe);
-      DOOR_IT[n] = interactive(robe, t => { A.position.x = (am - 0.06) * t; }, { open:false, dur:0.8 });
+      // each door slides on its own track over the other; opening one closes the other
+      const ia = interactive(A, t => { A.position.x = (am - 0.06) * t; }, { open:false, dur:0.8 });
+      const ib = interactive(B, t => { B.position.x = -(am - 0.06) * t; }, { open:false, dur:0.8 });
+      ia.partner = ib; ib.partner = ia; ib.kind = 'robe';
+      DOOR_IT[n] = ia;
     } else if (kind === 'garage') {                                // sectional door: rolls up into the head of the opening
       const g = frame(a0, m), q = new THREE.Group(); g.add(q); q.position.y = DOOR_H;
       part(q, len, DOOR_H, 0.03, len / 2, -DOOR_H / 2, 0, M.garageDoor);
@@ -1255,6 +1258,85 @@ const coffee = (L, W) => () => {
     p.push([L * x, W * z, w, l, y, y + 0.03, m, soft(0.004)]);                                        // books stacked on the shelf
   return p;
 };
+// ---------- groceries for the fridge and pantry: turned bottles and jars, tins, cartons and packets with simple printed labels ----------
+const GROC = (() => {
+  const mats = new Map(), texs = new Map();
+  let glow = 0;                                                   // inside the fridge everything picks up a little of its light
+  const hex = n => '#' + n.toString(16).padStart(6, '0');
+  const labelTex = ([bg, fg, style]) => {
+    const k = bg + '-' + fg + '-' + style; if (texs.has(k)) return texs.get(k);
+    const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d');
+    g.fillStyle = hex(bg); g.fillRect(0, 0, 128, 128); g.fillStyle = hex(fg);
+    if (style === 'band') g.fillRect(0, 46, 128, 38);
+    else if (style === 'disc') { g.beginPath(); g.arc(64, 66, 30, 0, 7); g.fill(); }
+    else { g.beginPath(); g.moveTo(0, 128); g.lineTo(0, 86); g.quadraticCurveTo(64, 40, 128, 86); g.lineTo(128, 128); g.fill(); }
+    const lum = ((bg >> 16) * 0.3 + ((bg >> 8) & 255) * 0.59 + (bg & 255) * 0.11) / 255;
+    g.fillStyle = lum > 0.6 ? 'rgba(30,30,30,0.7)' : 'rgba(255,255,255,0.85)';
+    g.fillRect(26, 18, 76, 11); g.fillRect(40, 104, 48, 6);         // a brand name and a line of small print
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; texs.set(k, t); return t;
+  };
+  const mt = (c, o = {}) => {
+    const k = c + JSON.stringify(o) + glow; if (mats.has(k)) return mats.get(k);
+    const m = new THREE.MeshStandardMaterial({ color:c, roughness:o.r ?? 0.6, metalness:o.metal ? 0.85 : 0 });
+    if (o.glass) { m.transparent = true; m.opacity = o.glass; m.roughness = 0.08; m.depthWrite = false; }
+    if (o.label) { m.map = labelTex(o.label); m.color.set(0xffffff); }
+    if (glow) { m.emissive = new THREE.Color(o.label ? 0xffffff : c); m.emissiveIntensity = glow; if (o.label) m.emissiveMap = m.map; }
+    mats.set(k, m); return m;
+  };
+  let into = furn;
+  const put = (geo, m, x, d, y) => { const o = new THREE.Mesh(geo, m); o.position.set(wx(x), y, wz(d)); o.receiveShadow = true; into.add(o); return o; };
+  const cyl = (r, h, rt = r, seg = 18, open = false) => new THREE.CylinderGeometry(rt, r, h, seg, 1, open).translate(0, h / 2, 0);
+  const bx = (x0, x1, d0, d1, y0, y1, m) => put(new THREE.BoxGeometry(x1 - x0, y1 - y0, d1 - d0).translate(0, (y1 - y0) / 2, 0), m, (x0 + x1) / 2, (d0 + d1) / 2, y0);
+  const sphere = new THREE.SphereGeometry(1, 14, 10);
+  const ball = (x, d, y, r, c, sy = 1, sx = 1) => { const o = put(sphere, mt(c, { r:0.55 }), x, d, y + r * sy); o.scale.set(r * sx, r * sy, r); return o; };
+  const bottle = (x, d, y, { r = 0.03, h = 0.24, c = 0x3a7a3a, glass = 0, cap = 0x222222, label } = {}) => {
+    const pts = [[0, 0], [r * 0.92, 0], [r, 0.008], [r, h * 0.6], [r * 0.55, h * 0.76], [r * 0.34, h * 0.84], [r * 0.34, h * 0.94], [0, h * 0.94]];
+    const out = [put(new THREE.LatheGeometry(pts.map(([a, b]) => new THREE.Vector2(a, b)), 16), mt(c, glass ? { glass } : { r:0.3 }), x, d, y),
+                 put(cyl(r * 0.38, h * 0.07), mt(cap, { r:0.5 }), x, d, y + h * 0.93)];
+    if (label) out.push(put(cyl(r * 1.03, h * 0.26, r * 1.03, 16, true), mt(0xffffff, { label }), x, d, y + h * 0.2));
+    return out;
+  };
+  const jar = (x, d, y, { r = 0.04, h = 0.12, fill = 0xc9a35b, lid = 0xb08a5a, lvl = 0.8 } = {}) => [
+    put(cyl(r * 0.9, h * lvl), mt(fill, { r:0.9 }), x, d, y + 0.004),
+    put(cyl(r, h), mt(0xe4f0f2, { glass:0.28 }), x, d, y),
+    put(cyl(r * 1.04, 0.018), mt(lid, { r:0.45 }), x, d, y + h)];
+  const tin = (x, d, y, { r = 0.036, h = 0.11, label } = {}) => {
+    const rim = mt(0xc8ccd0, { metal:1, r:0.3 });
+    return [put(cyl(r, h), [mt(0xffffff, { label }), rim, rim], x, d, y)];
+  };
+  const pack = (x, d, y, { w, h, l, label, c = 0xf4f2ec } = {}) => {
+    const side = mt(0xffffff, { label, r:0.7 }), end = mt(c, { r:0.7 });
+    return [put(new THREE.BoxGeometry(w, h, l).translate(0, h / 2, 0), [side, side, end, end, side, side], x, d, y)];
+  };
+  const carton = (x, d, y, { w = 0.072, h = 0.22, label } = {}) => {   // milk or juice: a gable-topped carton with a screw cap
+    const b = h - w * 0.45, top = mt(0xf4f4f0, { r:0.7 }), out = pack(x, d, y, { w, h:b, l:w, label });
+    const tri = new THREE.Shape([new THREE.Vector2(-w / 2, 0), new THREE.Vector2(w / 2, 0), new THREE.Vector2(0, w * 0.45)]);
+    out.push(put(new THREE.ExtrudeGeometry(tri, { depth:w, bevelEnabled:false }).translate(0, 0, -w / 2), top, x, d, y + b),
+             put(new THREE.BoxGeometry(0.004, 0.018, w).translate(0, 0.009, 0), top, x, d, y + b + w * 0.45 - 0.004),
+             put(cyl(0.011, 0.012), mt(label[1], { r:0.5 }), x + w * 0.2, d, y + b + w * 0.2));
+    return out;
+  };
+  const tub = (x, d, y, { r = 0.05, h = 0.07, label, lid = 0xffffff } = {}) => [
+    put(new THREE.CylinderGeometry(r, r * 0.86, h, 20).translate(0, h / 2, 0), [mt(0xffffff, { label, r:0.5 }), mt(lid), mt(lid)], x, d, y),
+    put(cyl(r * 1.04, 0.012), mt(lid, { r:0.4 }), x, d, y + h)];
+  const eggs = (x, d, y, cols = 6) => {                             // an open pulp tray of a dozen eggs, laid along x
+    const out = [bx(x - cols * 0.025, x + cols * 0.025, d - 0.05, d + 0.05, y, y + 0.03, mt(0xb9b2a3, { r:1 }))];
+    for (let i = 0; i < cols; i++) for (const dd of [-0.025, 0.025]) out.push(ball(x - cols * 0.025 + 0.025 + i * 0.05, d + dd, y + 0.012, 0.021, i % 3 ? 0xe9cfa8 : 0xf3ead8, 1.3));
+    return out;
+  };
+  const bin = (x0, x1, d0, d1, y, h, c = 0xe6f1f3, op = 0.32) => {   // a clear tray: floor, front and sides
+    const m = mt(c, { glass:op }), t = 0.004;
+    return [bx(x0, x1, d0, d1, y, y + t, m), bx(x0, x1, d1 - t, d1, y, y + h, m), bx(x0, x1, d0, d0 + t, y, y + h, m),
+            bx(x0, x0 + t, d0, d1, y, y + h, m), bx(x1 - t, x1, d0, d1, y, y + h, m)];
+  };
+  const basket = (x0, x1, d0, d1, y, h) => {
+    const m = mt(0xa57c4a, { r:1 }), t = 0.008;
+    return [bx(x0, x1, d0, d1, y, y + t, m), bx(x0, x1, d1 - t, d1, y, y + h, m), bx(x0, x1, d0, d0 + t, y, y + h, m),
+            bx(x0, x0 + t, d0, d1, y, y + h, m), bx(x1 - t, x1, d0, d1, y, y + h, m)];
+  };
+  return { mt, put, cyl, bx, ball, bottle, jar, tin, pack, carton, tub, eggs, bin, basket,
+           begin(parent, g = 0) { into = parent; glow = g; }, end() { into = furn; glow = 0; } };
+})();
 // fridge: French doors over a freezer drawer, in the gap beside the pantry. Its front faces into the kitchen (+d).
 {
   M.steel.metalness = 0.6; M.steel.envMap = M.rim.envMap; M.steel.envMapIntensity = 0.8;
@@ -1272,10 +1354,61 @@ const coffee = (L, W) => () => {
   for (const [a, b] of [[x0 + 0.012, x0 + 0.02], [x1 - 0.02, x1 - 0.012]]) F(a, b, cb, fd, 0.68, ct, lit);
   F(x0 + 0.02, x1 - 0.02, cb, fd, ct - 0.008, ct, lit); F(x0 + 0.02, x1 - 0.02, cb, fd, 0.68, 0.69, lit);
   F(mid - 0.02, mid + 0.02, fd - 0.02, fd, 0.69, ct - 0.008, body);                       // centre mullion keeps the door gap dark
-  for (const y of [0.98, 1.24, 1.5]) F(x0 + 0.02, x1 - 0.02, cb + 0.006, fd - 0.01, y, y + 0.008, M.porcelain);   // shelves
-  const food = [0xd8432f, 0xf2c14e, 0x5b8c3a, 0xf7f3ea, 0x3f6fb0, 0xe38b2c];
-  [[0.12, 0.69, 0.16], [0.3, 0.69, 0.12], [0.6, 0.69, 0.2], [0.15, 0.988, 0.18], [0.45, 0.988, 0.1], [0.7, 0.988, 0.15], [0.25, 1.248, 0.14], [0.55, 1.248, 0.2], [0.4, 1.508, 0.12]]
-    .forEach(([fx, y, h], i) => F(x0 + fx - 0.045, x0 + fx + 0.045, fd - 0.3, fd - 0.06, y, y + h, mat(food[i % food.length])));
+  for (const y of [0.98, 1.24, 1.5]) F(x0 + 0.02, x1 - 0.02, cb + 0.006, fd - 0.09, y, y + 0.008, M.porcelain);   // shelves (short of the door bins)
+  const G = GROC, fg = new THREE.Group(); furn.add(fg); G.begin(fg, 0.18);
+  { // floor: two clear crisper drawers, fruit on the left and vegetables on the right
+    G.bin(3.95, 4.345, 15.16, 15.46, 0.69, 0.19); G.bin(4.355, 4.75, 15.16, 15.46, 0.69, 0.19);
+    for (const [x, d, y, c] of [[4.0, 15.22, 0.694, 0xc0262b], [4.075, 15.23, 0.694, 0xd23a2a], [4.0, 15.3, 0.694, 0x8db53a], [4.07, 15.31, 0.694, 0xc0262b], [4.035, 15.265, 0.758, 0xd23a2a]])
+      G.ball(x, d, y, 0.034, c);
+    G.ball(4.24, 15.3, 0.694, 0.08, 0x6fa83a, 0.75); G.ball(4.24, 15.3, 0.74, 0.06, 0x9cc95a, 0.7);       // a lettuce
+    for (let i = 0; i < 4; i++) { const o = G.put(new THREE.ConeGeometry(0.013, 0.17, 8), G.mt(0xe8742a), 4.47, 15.2 + i * 0.026, 0.71); o.rotation.z = Math.PI / 2; }
+    G.ball(4.64, 15.22, 0.694, 0.04, 0xd8312a, 0.9); G.ball(4.69, 15.31, 0.694, 0.04, 0xf2c230, 0.9);       // capsicums
+    G.ball(4.47, 15.37, 0.694, 0.028, 0xf1d33a, 1, 1.3); G.ball(4.55, 15.39, 0.694, 0.028, 0xf1d33a, 1, 1.3);  // lemons
+  }
+  { // shelf 1: milk and juice, yoghurt, butter, cheese and a container of leftovers
+    const y = 0.988;
+    G.carton(3.99, 15.36, y, { h:0.23, label:[0xffffff, 0x2a6bd1, 'band'] }); G.carton(4.075, 15.36, y, { h:0.2, label:[0xfff6e6, 0xf08a1a, 'wave'] });
+    G.tub(4.18, 15.38, y, { r:0.042, h:0.075, label:[0xffffff, 0xd83a6a, 'disc'], lid:0xd83a6a }); G.tub(4.18, 15.38, y + 0.087, { r:0.042, h:0.075, label:[0xffffff, 0x7a4ab0, 'disc'], lid:0x7a4ab0 });
+    G.tub(4.29, 15.38, y, { r:0.055, h:0.05, label:[0xf6e27a, 0x2f7a3a, 'band'], lid:0xf6e27a });
+    G.put(new THREE.CylinderGeometry(0.07, 0.07, 0.05, 14, 1, false, 0, 0.9).translate(0, 0.025, 0), G.mt(0xf2c94c, { r:0.7 }), 4.38, 15.27, y);
+    G.bx(4.5, 4.72, 15.2, 15.42, y, y + 0.08, G.mt(0xe4f0f2, { glass:0.3 })); G.bx(4.51, 4.71, 15.21, 15.41, y + 0.004, y + 0.05, G.mt(0xb5562a, { r:0.9 }));
+    G.bx(4.495, 4.725, 15.195, 15.425, y + 0.08, y + 0.092, G.mt(0x4a87c8, { r:0.5 }));
+  }
+  { // shelf 2: a tray of eggs, jars of jam, pickles and mayonnaise, and a covered bowl
+    const y = 1.248;
+    G.eggs(4.11, 15.36, y);
+    G.jar(4.33, 15.39, y, { r:0.034, h:0.09, fill:0x9c1a2a, lid:0xd8d8d8, lvl:0.85 }); G.jar(4.42, 15.37, y, { r:0.042, h:0.13, fill:0x7a8a2a, lid:0xe0b020 });
+    G.jar(4.36, 15.25, y, { r:0.04, h:0.1, fill:0xf3ecd2, lid:0x2a5fc4, lvl:0.9 });
+    G.put(new THREE.CylinderGeometry(0.1, 0.065, 0.07, 22).translate(0, 0.035, 0), G.mt(0xf6f6f2, { r:0.3 }), 4.62, 15.3, y);
+    G.put(G.cyl(0.102, 0.003), G.mt(0xe4f0f2, { glass:0.35 }), 4.62, 15.3, y + 0.07);
+  }
+  { // shelf 3: water, a bottle of wine, grapes and a cake under a cover
+    const y = 1.508;
+    for (const x of [3.99, 4.06]) G.bottle(x, 15.38, y, { r:0.031, h:0.24, c:0xbfe0ee, glass:0.45, cap:0x2a6bd1, label:[0xffffff, 0x3a9ad9, 'wave'] });
+    G.bottle(4.15, 15.27, y, { r:0.035, h:0.25, c:0x23402a, glass:0.85, cap:0x7a1a2a, label:[0xf4ead6, 0x7a1a2a, 'band'] });
+    for (let i = 0; i < 14; i++) { const a = i * 2.4, lv = Math.floor(i / 5); G.ball(4.34 + Math.cos(a) * (0.04 - lv * 0.012), 15.36 + Math.sin(a) * (0.03 - lv * 0.009), y + lv * 0.026, 0.016, 0x5a2a5a); }
+    G.put(G.cyl(0.085, 0.06), G.mt(0xe8c99a, { r:0.9 }), 4.6, 15.3, y + 0.004); G.put(G.cyl(0.086, 0.012), G.mt(0xf7f0e6, { r:0.8 }), 4.6, 15.3, y + 0.064);
+    G.put(G.cyl(0.1, 0.11), G.mt(0xe4f0f2, { glass:0.22 }), 4.6, 15.3, y);
+  }
+  // door bins, built in the closed position and then carried on their doors
+  const doorItems = { L:[], R:[] }, keep = (k, a) => { doorItems[k].push(...a.flat()); };
+  for (const [k, xa, xb] of [['L', 3.95, 4.32], ['R', 4.38, 4.75]]) for (const y of [0.76, 1.1, 1.44]) keep(k, G.bin(xa, xb, fd - 0.075, fd - 0.006, y, 0.07, 0xdde8ec, 0.45));
+  const dd = fd - 0.04;
+  keep('L', [G.bottle(4.0, dd, 0.764, { r:0.031, h:0.26, c:0xf6f6f2, cap:0x2a6bd1, label:[0xffffff, 0x2a6bd1, 'band'] }),
+             G.bottle(4.08, dd, 0.764, { r:0.03, h:0.24, c:0xf3a02a, glass:0.75, cap:0x2a8a3a, label:[0xfff6e6, 0x2a8a3a, 'wave'] }),
+             G.bottle(4.0, dd, 1.104, { r:0.025, h:0.18, c:0xc0201a, cap:0xf2f2f2 }), G.bottle(4.06, dd, 1.104, { r:0.025, h:0.18, c:0xf2c21a, cap:0xc0201a }),
+             G.bottle(4.12, dd, 1.104, { r:0.022, h:0.16, c:0x2a1a10, glass:0.85, cap:0xc0201a, label:[0xf4ead6, 0xc0201a, 'disc'] }),
+             G.bottle(4.19, dd, 1.104, { r:0.026, h:0.17, c:0xf6f2e0, cap:0x2a5fc4 }),
+             G.jar(4.0, dd, 1.444, { r:0.028, h:0.07, fill:0xc94a2a, lid:0xe0b020 }), G.jar(4.07, dd, 1.444, { r:0.028, h:0.07, fill:0x5a3a1a, lid:0xd8d8d8 }),
+             G.jar(4.14, dd, 1.444, { r:0.028, h:0.08, fill:0x7a8a2a, lid:0x2a6bd1 })]);
+  keep('R', [G.bottle(4.45, dd, 0.764, { r:0.031, h:0.25, c:0x5a2a1a, glass:0.8, cap:0xd8201a, label:[0xd8201a, 0xffffff, 'wave'] }),
+             G.bottle(4.53, dd, 0.764, { r:0.031, h:0.25, c:0x5a2a1a, glass:0.8, cap:0xd8201a, label:[0xd8201a, 0xffffff, 'wave'] }),
+             G.bottle(4.62, dd, 0.764, { r:0.03, h:0.24, c:0x8ac0a0, glass:0.6, cap:0x2f7a3a, label:[0xffffff, 0x2f7a3a, 'band'] }),
+             ...[[4.44, [0xd8201a, 0xffffff, 'wave']], [4.51, [0x2a6bd1, 0xf2c14e, 'band']], [4.58, [0xc8ccd0, 0x2a8a3a, 'disc']], [4.65, [0xf2c14e, 0xd8201a, 'band']]]
+               .map(([x, label]) => G.tin(x, dd, 1.104, { r:0.033, h:0.12, label })),
+             G.pack(4.48, dd, 1.444, { w:0.15, h:0.05, l:0.06, label:[0xf6e27a, 0x2a6bd1, 'band'], c:0xf6e27a }),
+             G.tub(4.64, dd, 1.444, { r:0.03, h:0.06, label:[0xffffff, 0x2f7a3a, 'disc'], lid:0x2f7a3a })]);
+  G.end();
   // a door hung on a pivot at its outer front corner; parts are plan boxes, moved into the pivot's frame
   const hingeAt = (px, pd, parts) => {
     const g = new THREE.Group(); g.position.set(wx(px), 0, wz(pd)); furn.add(g);
@@ -1286,6 +1419,7 @@ const coffee = (L, W) => () => {
   const L = hingeAt(x0 + g, d1, [[x0 + g, mid - g, fd, d1, 0.66 + 2 * g, H - g, M.steel], [mid - 0.05, mid - 0.032, d1, d1 + 0.045, 0.95, 1.6, M.rim],
     [x0 + 0.08, x0 + 0.27, d1, d1 + 0.008, 1.05, 1.36, M.trim]]);
   const Rt = hingeAt(x1 - g, d1, [[mid + g, x1 - g, fd, d1, 0.66 + 2 * g, H - g, M.steel], [mid + 0.032, mid + 0.05, d1, d1 + 0.045, 0.95, 1.6, M.rim]]);
+  for (const [door, items] of [[L, doorItems.L], [Rt, doorItems.R]]) for (const o of items) { o.updateMatrixWorld(true); door.attach(o); }
   interactive(L, t => { L.rotation.y = 1.75 * t; });
   interactive(Rt, t => { Rt.rotation.y = -1.75 * t; });
   // freezer drawer: slides out with a white basket behind its front
@@ -1454,8 +1588,37 @@ const coffee = (L, W) => () => {
   for (const [a, b] of [[3.30, 3.318], [3.852, 3.87]]) F(a, b, 15.10, 15.53, 0.1, 2.2, M.carcass);    // sides
   F(3.318, 3.852, 15.10, 15.53, 2.182, 2.2, M.carcass); F(3.318, 3.852, 15.10, 15.53, 0.1, 0.118, M.carcass);
   for (const y of [0.5, 0.9, 1.3, 1.7]) F(3.318, 3.852, 15.10, 15.52, y, y + 0.018, M.front);   // shelves inside
-  [[3.36, 0.518, 0.2, 0xc9a35b], [3.48, 0.518, 0.14, 0x8c3b2a], [3.66, 0.918, 0.18, 0xe7d7b4], [3.78, 0.918, 0.12, 0x5b6f3a], [3.4, 1.318, 0.22, 0xd8432f],
-   [3.6, 1.318, 0.16, 0xf2efe6], [3.75, 1.718, 0.2, 0x3f6fb0]].forEach(([x, y, h, c]) => F(x - 0.05, x + 0.05, 15.2, 15.42, y, y + h, mat(c)));
+  { // what's on the shelves
+    const G = GROC, pg = new THREE.Group(); furn.add(pg); G.begin(pg);
+    // floor: a basket of potatoes and onions, and a pack of bottled water
+    G.basket(3.33, 3.57, 15.2, 15.46, 0.118, 0.13);
+    for (let i = 0; i < 9; i++) G.ball(3.37 + (i % 3) * 0.075, 15.25 + Math.floor(i / 3) * 0.08, 0.126 + (i % 2) * 0.03, 0.034, i % 4 ? 0xb88a52 : 0xc77a3a, 0.85, 1.2);
+    for (const x of [3.64, 3.71, 3.78]) for (const d of [15.33, 15.4]) G.bottle(x, d, 0.118, { r:0.031, h:0.3, c:0xbfe0ee, glass:0.45, cap:0x2a6bd1, label:[0xffffff, 0x3a9ad9, 'wave'] });
+    // breakfast: cereal boxes, crackers and a tall jar of pasta
+    G.pack(3.43, 15.3, 0.518, { w:0.19, h:0.29, l:0.07, label:[0xf2c14e, 0xd8432f, 'disc'] });
+    G.pack(3.63, 15.3, 0.518, { w:0.17, h:0.26, l:0.07, label:[0x3f6fb0, 0xf7f3ea, 'band'] });
+    G.pack(3.79, 15.2, 0.518, { w:0.07, h:0.2, l:0.13, label:[0xf7f3ea, 0x2f7a3a, 'wave'] });
+    G.jar(3.8, 15.4, 0.518, { r:0.04, h:0.25, fill:0xf0cf6a, lid:0x8a6a4a, lvl:0.85 });
+    // baking: a row of canisters, oats behind and a loaf of bread
+    [[3.37, 0xf3f0e8], [3.47, 0xe9e2cf], [3.57, 0x4a2e1e], [3.67, 0xb07a40]].forEach(([x, fill]) => G.jar(x, 15.4, 0.918, { r:0.044, h:0.17, fill, lid:0xc49a62, lvl:0.75 }));
+    G.tin(3.43, 15.22, 0.918, { r:0.055, h:0.2, label:[0xf4ead6, 0xb05a2a, 'band'] });
+    G.put(soft(0.03)(0.12, 0.1, 0.25).translate(0, 0.05, 0), G.mt(0xc58b4b, { r:0.9 }), 3.77, 15.3, 0.918);
+    // tins and sauces
+    const tins = [[0xc0201a, 0xf2e6c8, 'band'], [0x2a6bd1, 0xf2c14e, 'disc'], [0xe8e2d0, 0xc0201a, 'band'], [0x2f7a3a, 0xffffff, 'wave']];
+    [[3.36, 15.43, 1.318], [3.44, 15.43, 1.318], [3.52, 15.43, 1.318], [3.36, 15.35, 1.318], [3.44, 15.35, 1.318], [3.52, 15.35, 1.318], [3.4, 15.43, 1.428], [3.48, 15.43, 1.428]]
+      .forEach(([x, d, y], i) => G.tin(x, d, y, { label:tins[i % tins.length] }));
+    G.bottle(3.63, 15.4, 1.318, { r:0.03, h:0.28, c:0x5a6a1a, glass:0.8, cap:0x222222, label:[0x1f3a1f, 0xd8b84a, 'band'] });
+    G.bottle(3.71, 15.4, 1.318, { r:0.026, h:0.2, c:0x2a1408, glass:0.85, cap:0xc0201a, label:[0xf4ead6, 0xc0201a, 'disc'] });
+    G.bottle(3.79, 15.4, 1.318, { r:0.027, h:0.22, c:0x7a3a1a, glass:0.7, cap:0xe0b020 });
+    G.jar(3.72, 15.24, 1.318, { r:0.04, h:0.11, fill:0xd9921a, lid:0xe0b020, lvl:0.9 });
+    // top: paper towels and a basket of snacks
+    for (const x of [3.38, 3.5]) { G.put(G.cyl(0.055, 0.23), G.mt(0xfbfbf8, { r:1 }), x, 15.3, 1.718); G.put(G.cyl(0.02, 0.232), G.mt(0x9a7a52, { r:1 }), x, 15.3, 1.718); }
+    G.basket(3.6, 3.84, 15.18, 15.46, 1.718, 0.15);
+    [[3.65, 0xd8432f], [3.72, 0xf2c14e], [3.79, 0x3f6fb0]].forEach(([x, c], i) => {
+      for (const o of G.pack(x, 15.32 + (i - 1) * 0.04, 1.726, { w:0.06, h:0.2, l:0.035, label:[c, 0xffffff, 'disc'], c })) o.rotation.z = (i - 1) * 0.15;
+    });
+    G.end();
+  }
   for (const [a, b, hx, sg] of [[3.30, 3.585, 3.54, 1], [3.585, 3.87, 3.618, -1]]) {
     const px = sg > 0 ? a + 0.003 : b - 0.003, g = new THREE.Group(); g.position.set(wx(px), 0, wz(15.55)); furn.add(g); g.updateMatrixWorld(true);
     for (const o of [F(a + 0.003, b - 0.003, 15.53, 15.55, 0.103, 2.197, M.front), F(hx, hx + 0.012, 15.55, 15.578, 0.9, 1.4, M.rim)]) { o.updateMatrixWorld(true); g.attach(o); }
@@ -1646,8 +1809,10 @@ const coffee = (L, W) => () => {
   const S = (x0, x1, d0, d1, y0, y1, m, make) => mesh(make(x1 - x0, y1 - y0, d1 - d0), m, (x0 + x1) / 2, (y0 + y1) / 2, (d0 + d1) / 2);
   const split = (x0, x1, d0, d1, y0, y1, m, make) => {                        // like the walls: the part above the cut height is wall-hung
     const mk = make || ((w, h, l) => metricBox(w, h, l));
-    if (y0 < H_CUT) S(x0, x1, d0, d1, y0, Math.min(y1, H_CUT), m, mk);
-    if (y1 > H_CUT) hung(() => S(x0, x1, d0, d1, Math.max(y0, H_CUT), y1, m, mk));
+    const out = [];
+    if (y0 < H_CUT) out.push(S(x0, x1, d0, d1, y0, Math.min(y1, H_CUT), m, mk));
+    if (y1 > H_CUT) hung(() => out.push(S(x0, x1, d0, d1, Math.max(y0, H_CUT), y1, m, mk)));
+    return out;
   };
   const cyl = (w, h, l) => projectUV(new THREE.CylinderGeometry(0.5, 0.5, 1, 20).scale(w, h, l));
   // finishes for the bedside lamps and TVs in the furniture catalogue
@@ -1684,11 +1849,20 @@ const coffee = (L, W) => () => {
     ['d', 6.78, 9.80, 1.28, block],                       // theatre (block-out)
   ];
   for (const [ax, a0, a1, at, m] of CURTAINS) {
-    const t = 0.03, top = 2.38, pw = 0.32;
-    for (const [p0, p1] of [[a0 - 0.14, a0 - 0.14 + pw], [a1 + 0.14 - pw, a1 + 0.14]]) {
+    const t = 0.03, top = 2.38, pw = 0.32, mid = (a0 + a1) / 2, sides = [];
+    for (const [p0, p1, q0, q1] of [[a0 - 0.14, a0 - 0.14 + pw, a0 - 0.14, mid + 0.02], [a1 + 0.14 - pw, a1 + 0.14, mid - 0.02, a1 + 0.14]]) {
       const make = drape(p0 * 7);
-      if (ax === 'x') split(p0, p1, at - t, at + t, 0.07, top, m, make); else split(at - t, at + t, p0, p1, 0.07, top, m, make);
+      const ms = ax === 'x' ? split(p0, p1, at - t, at + t, 0.07, top, m, make) : split(at - t, at + t, p0, p1, 0.07, top, m, make);
+      sides.push({ ms, p0, p1, q0, q1 });
     }
+    // click a curtain to draw it across the window, click again to draw it back: each drape widens toward the middle
+    const it = interactive(new THREE.Group(), k => {
+      for (const { ms, p0, p1, q0, q1 } of sides) {
+        const lo = p0 + (q0 - p0) * k, hi = p1 + (q1 - p1) * k, sc = (hi - lo) / pw, c = (lo + hi) / 2;
+        for (const o of ms) if (ax === 'x') { o.scale.x = sc; o.position.x = wx(c); } else { o.scale.z = sc; o.position.z = wz(c); }
+      }
+    }, { open:false, dur:1.1 });
+    for (const { ms } of sides) for (const o of ms) o.userData.inter = it;
     hung(() => ax === 'x' ? F(a0 - 0.18, a1 + 0.18, at - 0.012, at + 0.012, top, top + 0.03, M.trim)
                           : F(at - 0.012, at + 0.012, a0 - 0.18, a1 + 0.18, top, top + 0.03, M.trim));
   }
@@ -2322,7 +2496,7 @@ function clickTarget(maxDist = Infinity) {
 }
 function activate(t) {
   if (!t) return false;
-  if (t.it) t.it.open = !t.it.open; else t.mesh.material = SWITCH.get(t.mesh.material);
+  if (t.it) { t.it.open = !t.it.open; if (t.it.open && t.it.partner) t.it.partner.open = false; } else t.mesh.material = SWITCH.get(t.mesh.material);
   moved(); return true;
 }
 function endDrag(e) {
