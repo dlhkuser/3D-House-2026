@@ -868,7 +868,7 @@ for (const m of [M.doorLeaf, M.doorHw, M.jamb, M.alu, M.slideGlass, M.frontDoor,
       part(leaf, L, DOOR_H - 0.03, 0.035, L / 2, (DOOR_H - 0.03) / 2 + 0.01, 0, M.doorLeaf);
       for (const sd of [-1, 1]) part(leaf, 0.03, 0.16, 0.006, 0.07, 1.0, sd * 0.02, M.doorHw, false);   // flush pulls
       DOOR_IT[n] = interactive(leaf, t => { leaf.position.x = (L - 0.06) * t; }, { open:true, dur:0.8 });
-      DOOR_IT[n].free = t => [a0 + J + (L - 0.06) * t, a1];
+      DOOR_IT[n].free = t => [a0, a0 + J + (L - 0.06) * t];        // the gap the leaf leaves as it slides away
     } else if (kind === 'door' || kind === 'front') {             // hinged
       linings();
       const [he, side, open0] = SWING[n] || [0, 1, true], front = kind === 'front';
