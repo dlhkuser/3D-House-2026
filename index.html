@@ -897,6 +897,7 @@ roof = buildRoof();
 // Built-in joinery (kitchen, bath, vanities, trough) is fixed. Loose furniture is a "piece" that can be dragged,
 // snapped to a grid and rotated. Pieces are built in plan coordinates, then re-centred so they rotate about their middle.
 const furn = new THREE.Group(); scene.add(furn);
+const NO_COLLIDE = new Set();                              // built-in finishes that furniture may overlap
 const F = (x0, x1, d0, d1, y0, y1, m) => box(x0, x1, d0, d1, y0, y1, m, furn);
 // fittings fixed high on a wall (mirrors, overheads, flue, shower heads) would float above cut-down walls: shown only at full height
 const wallHung = new THREE.Group(); wallHung.visible = !cut; furn.add(wallHung);
@@ -1528,6 +1529,7 @@ const coffee = (L, W) => () => {
     return fit(g, w, h, l);
   };
   const sheer = mat(0xdcd6cb), block = mat(0x3b4048); sheer.roughness = block.roughness = 1;
+  NO_COLLIDE.add(sheer); NO_COLLIDE.add(block);            // curtains hang free: furniture can sit in front of a window
   const CURTAINS = [                                      // [window along 'x' or 'd', from, to, plane position, material]
     ['x', 7.69, 9.20, 0.30, sheer],                       // Bed 2
     ['d', 11.68, 14.70, 1.28, sheer],                     // master
@@ -1965,9 +1967,35 @@ function sat(A, B) {
 // solid walls and window walls are obstacles; door openings are not
 const WALL_OBS = WALL_RECTS.filter(r => r.c === 1 || r.c >= 200)
   .map(r => corners({ x0:wx(r.x0), x1:wx(r.x1), z0:wz(r.d1), z1:wz(r.d0) }, 0, 0, 0, 0));
+// built-ins (kitchen benches and island, vanities, laundry, bath, shower screens, toilets, robe shelving, garage
+// shelving...) are obstacles too: everything fixed in the furniture group that stands on or near the floor. Worked out
+// once, the first time it's needed, as a footprint rectangle per part.
+let BUILT_OBS = null;
+function builtObs() {
+  if (BUILT_OBS) return BUILT_OBS;
+  BUILT_OBS = []; furn.updateMatrixWorld(true);
+  const bx = new THREE.Box3();
+  for (const o of furn.children) {
+    if (o === wallHung || movables.includes(o)) continue;
+    let skip = false; o.traverse(c => { if (c.material && NO_COLLIDE.has(c.material)) skip = true; });
+    if (skip) continue;
+    bx.setFromObject(o);
+    if (bx.isEmpty() || bx.min.y > 0.3 || bx.max.y < 0.08) continue;          // hung above reach, or flat on the floor
+    if (bx.max.x - bx.min.x < 0.005 || bx.max.z - bx.min.z < 0.005) continue;
+    BUILT_OBS.push({ C:corners({ x0:bx.min.x, x1:bx.max.x, z0:bx.min.z, z1:bx.max.z }, 0, 0, 0, 0), x0:bx.min.x, x1:bx.max.x, z0:bx.min.z, z1:bx.max.z });
+  }
+  return BUILT_OBS;
+}
 function blocked(p, x, z, r) {
   if (overlapOff || FREE.has(p.userData.t)) return false;
   const A = corners(p.userData.fp, x, z, r);
+  // a piece already overlapping a fitting (from an older layout) may still be moved clear of it
+  const cur = movables.includes(p) ? corners(p.userData.fp, p.position.x, p.position.z, p.rotation.y) : null;
+  const ax0 = Math.min(...A.map(c => c[0])), ax1 = Math.max(...A.map(c => c[0])), az0 = Math.min(...A.map(c => c[1])), az1 = Math.max(...A.map(c => c[1]));
+  for (const b of builtObs()) {
+    if (b.x1 <= ax0 || b.x0 >= ax1 || b.z1 <= az0 || b.z0 >= az1) continue;
+    if (sat(A, b.C) && !(cur && sat(cur, b.C))) return true;
+  }
   for (const q of movables) {
     if (q === p || FREE.has(q.userData.t)) continue;
     if (sat(A, corners(q.userData.fp, q.position.x, q.position.z, q.rotation.y))) return true;
